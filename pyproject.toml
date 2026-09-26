@@ -1,0 +1,60 @@
+[project]
+name = "hindi-dubbing-pipeline"
+version = "0.1.0"
+description = "AI-assisted Hindi movie/anime dubbing pipeline - audio-first approach"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ffmpeg-python>=0.2.0",
+    "numpy>=1.24.0",
+    "pydub>=0.25.1",
+    "librosa>=0.10.0",
+    "soundfile>=0.12.0",
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
+    "whisper>=20231117",
+    "pyannote.audio>=3.1.0",
+    "transformers>=4.35.0",
+    "accelerate>=0.24.0",
+    "huggingface-hub>=0.19.0",
+    "tqdm>=4.66.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "python-dotenv>=1.0.0",
+    "click>=8.1.0",
+    "rich>=13.6.0",
+    "loguru>=0.7.0",
+    "jsonschema>=4.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.11.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel", "setuptools_scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hindi_dubbing*"]
+
+[project.scripts]
+hindi-dubbing = "hindi_dubbing.__main__:cli"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
