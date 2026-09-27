@@ -1,70 +1,15 @@
-# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-*$py.class
-
-# Virtual environments
-venv/
-env/
-ENV/
-.venv
-
-# Environment variables and secrets
+*.log
 .env
-.env.local
-.env.*.local
-
-# IDE and editor files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Distribution / packaging
-dist/
-build/
-*.egg-info/
-UNKNOWN.egg-info/
-
-# Generated/temp files
+.cache/
+models/
+jobs/
 temp/
 output/
 *.mp4
 *.wav
 *.mp3
-*.mkv
-*.avi
-
-# Cache directories
-.cache/
+*.m4a
+*.flac
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Model files (large, downloaded at runtime)
-models/
-*.pt
-*.bin
-*.onnx
-
-# Project-specific generated files
-project_*/
-project_test*/
-demo_project.json
-project.json
-
-# Test files
-test_*.py
-demo*.py
-run_install.sh
-test_install.sh
-install.sh
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-logs/

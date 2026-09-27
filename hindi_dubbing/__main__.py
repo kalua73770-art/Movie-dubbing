@@ -1,8 +1,4 @@
-#!/usr/bin/env python
-"""
-Entry point for hindi-dubbing CLI.
-"""
-from hindi_dubbing.cli.main import cli
+from hindi_dubbing.cli.main import main
 
 if __name__ == "__main__":
-    cli()
+    main()
