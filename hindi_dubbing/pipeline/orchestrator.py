@@ -377,7 +377,7 @@ def run_pipeline(source_video: Path, output_video: Path, progress: Progress | No
 
         report("render", "Ducking original audio and rendering final movie")
         output_video.parent.mkdir(parents=True, exist_ok=True)
-        mix_and_duck(source_video, dialogue_track, output_video, settings.duck_db, log)
+        mix_and_duck(source_video, dialogue_track, output_video, segments=segments, log=log)
 
         state["segments"] = segments
         state["status"], state["stage"] = "completed", "done"
