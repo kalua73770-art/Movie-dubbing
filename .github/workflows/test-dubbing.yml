@@ -1,6 +1,9 @@
 name: Movie Dubbing Test
 
 on:
+  push:
+    paths:
+      - "test/input.mp4"
   workflow_dispatch:
     inputs:
       video_path:
