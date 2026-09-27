@@ -157,6 +157,39 @@ def _tts_batches(segments: list[dict], max_seconds: int, max_chars: int) -> list
     return batches
 
 
+def _build_speaker_sample(source_audio: Path, speaker_segments: list[dict], out_dir: Path, speaker: str, log: logging.Logger) -> Path:
+    """Build a short concatenated audio sample for character/voice analysis."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    items = []
+    cursor = 0.0
+
+    for idx, segment in enumerate(sorted(speaker_segments, key=lambda x: x["start"])):
+        duration = min(3.5, max(0.0, float(segment["end"]) - float(segment["start"])))
+        if duration < 0.35:
+            continue
+
+        raw = out_dir / f"{speaker}_{idx:02d}.wav"
+        extract_range(
+            source_audio,
+            raw,
+            float(segment["start"]),
+            float(segment["start"]) + duration,
+            log,
+        )
+        items.append((cursor, cursor + duration, raw))
+        cursor += duration + 0.15
+
+        if cursor >= 8.0:
+            break
+
+    if not items:
+        raise RuntimeError(f"No usable audio found for speaker {speaker}")
+
+    sample = out_dir / f"{speaker}_sample.wav"
+    assemble_track(items, cursor, sample)
+    return sample
+
+
 def _partition_ranges(ranges: list[tuple[float, float]], target_durations: list[float]) -> list[list[tuple[float, float]]]:
     if not ranges or not target_durations or len(ranges) < len(target_durations):
         return [[] for _ in target_durations]
@@ -281,9 +314,38 @@ def run_pipeline(source_video: Path, output_video: Path, progress: Progress | No
             raise RuntimeError("No speech segments returned by Gemini Transcribe")
 
         speakers = sorted(set(s["speaker"] for s in segments), key=lambda x: x)
-        voice_map = {sp: settings.voices[i % len(settings.voices)] for i, sp in enumerate(speakers)}
-        state["speakers"] = voice_map
         report("transcription", f"Found {len(segments)} dialogue segments / {len(speakers)} speakers")
+
+        report("speakers", "Analyzing character voices and selecting gender-aware TTS voices")
+        speaker_samples_dir = work / "speakers"
+        speaker_profiles = {}
+        speaker_segments = {
+            sp: [s for s in segments if s["speaker"] == sp]
+            for sp in speakers
+        }
+        for sp in speakers:
+            sample = _build_speaker_sample(
+                source_audio,
+                speaker_segments[sp],
+                speaker_samples_dir,
+                sp,
+                log,
+            )
+            context = " ".join(s["text"] for s in speaker_segments[sp][:12])
+            speaker_profiles[sp] = gemini.classify_speaker(sample, context)
+            try:
+                sample.unlink()
+            except Exception:
+                pass
+
+        voice_map = gemini.choose_voices(speaker_profiles)
+        state["speakers"] = {
+            sp: {
+                **speaker_profiles[sp],
+                "voice": voice_map[sp],
+            }
+            for sp in speakers
+        }
 
         report("translation", "Translating dialogue with Gemini Flash-Lite")
         for no, batch in enumerate(_batch_by_chars(segments, settings.translation_batch_chars), 1):
