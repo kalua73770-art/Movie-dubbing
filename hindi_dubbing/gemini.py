@@ -179,7 +179,9 @@ class GeminiService:
         lines = [f'{s["id"]}|||{s["text"]}' for s in segments]
         prompt = (
             "Translate every line below into natural spoken Hindi for movie dubbing. "
-            "Preserve meaning, names, emotion and intent. Do not explain anything. "
+            "Preserve meaning, names, emotion and intent. Keep short reactions, interjections, "
+            "and expletives natural to the scene; do not translate them phonetically into unrelated words. "
+            "Do not add or remove meaning. Do not explain anything. "
             "Return exactly one line per input in the format ID|||Hindi text.\n\n"
             + "\n".join(lines)
         )
