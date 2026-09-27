@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 import wave
@@ -192,6 +193,135 @@ class GeminiService:
         if missing:
             raise RuntimeError(f"translation missing IDs: {missing[:8]}")
         self.log.info("Translated %d segments with %s", len(segments), model)
+        return result
+
+    def classify_speaker(self, audio_path: Path, transcript_context: str) -> dict:
+        """
+        Infer the fictional character's likely gender presentation for voice selection.
+
+        The prompt explicitly distinguishes the character from the human voice actor,
+        which matters for anime where a female actor may voice a male character.
+        Ambiguous cases are kept neutral instead of forcing a guess.
+        """
+        prompt = (
+            "You are helping cast a Hindi dub for a fictional movie/anime character. "
+            "Analyze the attached speaker audio plus the dialogue context. "
+            "Infer the CHARACTER's likely gender presentation, not the human voice "
+            "actor's gender. Female voice actors may voice male characters and vice versa. "
+            "Use names, pronouns, relationships, role/context and the audio as secondary evidence. "
+            "If the evidence is weak, choose ambiguous. Return JSON only with exactly these keys: "
+            "character_gender (male|female|neutral|ambiguous) and confidence (0 to 1).\n\n"
+            f"Dialogue context:\n{transcript_context[:2500]}"
+        )
+        models = []
+        for model in [self.s.speaker_analysis_model, *self.s.text_models]:
+            if model and model not in models:
+                models.append(model)
+
+        last = None
+        for model in models:
+            for key_no, (key, client) in enumerate(self._clients(), 1):
+                audio_file = None
+                try:
+                    self.log.info(
+                        "Speaker analysis model=%s key=#%d sample=%s",
+                        model, key_no, audio_path.name
+                    )
+                    audio_file = client.files.upload(file=str(audio_path))
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=[audio_file, prompt],
+                    )
+                    text = getattr(response, "text", "") or ""
+                    match = re.search(r"\{.*\}", text, re.S)
+                    data = json.loads(match.group(0) if match else text)
+                    gender = str(data.get("character_gender", "ambiguous")).lower().strip()
+                    if gender not in {"male", "female", "neutral", "ambiguous"}:
+                        gender = "ambiguous"
+                    try:
+                        confidence = float(data.get("confidence", 0.0))
+                    except Exception:
+                        confidence = 0.0
+                    confidence = max(0.0, min(1.0, confidence))
+                    if confidence < 0.60 and gender in {"male", "female"}:
+                        gender = "ambiguous"
+                    return {"character_gender": gender, "confidence": confidence, "model": model}
+                except Exception as exc:
+                    last = exc
+                    self.log.warning(
+                        "Speaker analysis model=%s key=#%d failed: %s",
+                        model, key_no, str(exc)[:800]
+                    )
+                finally:
+                    if audio_file is not None:
+                        try:
+                            client.files.delete(name=audio_file.name)
+                        except Exception:
+                            pass
+
+        self.log.warning("Speaker analysis failed on all models/keys: %s", last)
+        return {"character_gender": "ambiguous", "confidence": 0.0, "model": None}
+
+    def choose_voices(self, speaker_profiles: dict[str, dict]) -> dict[str, str]:
+        """
+        Choose TTS voices using Google's current Voice catalog gender metadata.
+
+        Configured voices are preferred when their catalog metadata matches the
+        requested gender. If no configured voice matches, we fall back to other
+        prebuilt voices from the catalog. This avoids the old arbitrary
+        speaker-1->Kore, speaker-2->Puck cycling.
+        """
+        catalog = {}
+        for key_no, (key, client) in enumerate(self._clients(), 1):
+            try:
+                response = client.voices.list(type_=["prebuilt"], page_size=1000)
+                for voice in response.voices or []:
+                    voice_id = getattr(voice, "id", None) or getattr(voice, "display_name", None)
+                    gender = getattr(voice, "gender", None)
+                    if voice_id:
+                        catalog[str(voice_id)] = str(gender or "neutral").lower()
+                if catalog:
+                    break
+            except Exception as exc:
+                self.log.warning("Voice catalog lookup key=#%d failed: %s", key_no, str(exc)[:500])
+
+        if not catalog:
+            self.log.warning("Voice catalog unavailable; falling back to configured voices")
+            return {
+                speaker: self.s.voices[i % len(self.s.voices)]
+                for i, speaker in enumerate(sorted(speaker_profiles))
+            }
+
+        configured = [v for v in self.s.voices if v in catalog]
+        fallback_all = list(catalog.keys())
+        pools = {}
+
+        for gender in ("male", "female", "neutral"):
+            preferred = [v for v in configured if catalog.get(v) == gender]
+            if not preferred:
+                preferred = [v for v in fallback_all if catalog.get(v) == gender]
+            pools[gender] = preferred or fallback_all
+
+        counters = {"male": 0, "female": 0, "neutral": 0}
+        used = set()
+        result = {}
+
+        for speaker in sorted(speaker_profiles):
+            gender = speaker_profiles[speaker].get("character_gender", "ambiguous")
+            pool_gender = gender if gender in {"male", "female", "neutral"} else "neutral"
+            pool = pools[pool_gender] or fallback_all
+
+            candidate = None
+            for _ in range(len(pool)):
+                candidate = pool[counters[pool_gender] % len(pool)]
+                counters[pool_gender] += 1
+                if candidate not in used or len(pool) == 1:
+                    break
+
+            result[speaker] = candidate
+            used.add(candidate)
+
+        self.log.info("Selected gender-aware voices: %s", result)
         return result
 
     def _tts_request(self, client, model, segments, voices):
