@@ -4,6 +4,8 @@ on:
   push:
     paths:
       - "test/input.mp4"
+      - ".github/workflows/test-dubbing.yml"
+      - "hindi_dubbing/**"
   workflow_dispatch:
     inputs:
       video_path:
@@ -33,13 +35,15 @@ jobs:
       - name: Check test video
         run: |
           set -e
-          test -f "${{ inputs.video_path }}" || {
-            echo "::error::Video not found at ${{ inputs.video_path }}"
+          VIDEO_PATH="${{ inputs.video_path || 'test/input.mp4' }}"
+          echo "Using video: $VIDEO_PATH"
+          test -f "$VIDEO_PATH" || {
+            echo "::error::Video not found at $VIDEO_PATH"
             echo "Upload your test video to the repository first, then run this workflow."
             exit 1
           }
           echo "Input video:"
-          ls -lh "${{ inputs.video_path }}"
+          ls -lh "$VIDEO_PATH"
 
       - name: Install FFmpeg
         run: |
@@ -59,7 +63,8 @@ jobs:
       - name: Run movie dubbing
         run: |
           mkdir -p test-output
-          python -m hindi_dubbing.cli.main "${{ inputs.video_path }}" "test-output/dubbed_hindi.mp4"
+          VIDEO_PATH="${{ inputs.video_path || 'test/input.mp4' }}"
+          python -m hindi_dubbing.cli.main "$VIDEO_PATH" "test-output/dubbed_hindi.mp4"
 
       - name: Show output
         if: always()
