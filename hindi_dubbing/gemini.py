@@ -266,43 +266,78 @@ class GeminiService:
 
     def choose_voices(self, speaker_profiles: dict[str, dict]) -> dict[str, str]:
         """
-        Choose TTS voices using Google's current Voice catalog gender metadata.
+        Select only the featured Gemini TTS voices that are consistently accepted
+        by the configured TTS models. The Extended Voice Library can return IDs such
+        as ar-001-advisor-1; those IDs are intentionally excluded for this MVP.
 
-        Configured voices are preferred when their catalog metadata matches the
-        requested gender. If no configured voice matches, we fall back to other
-        prebuilt voices from the catalog. This avoids the old arbitrary
-        speaker-1->Kore, speaker-2->Puck cycling.
+        Gender metadata is read from the Voice API for the featured voices, so the
+        character classification can still drive male/female voice selection.
         """
+        featured = {
+            "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
+            "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba",
+            "Despina", "Erinome", "Algenib", "Rasalgethi", "Laomedeia", "Achernar",
+            "Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird",
+            "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
+        }
+
         catalog = {}
         for key_no, (key, client) in enumerate(self._clients(), 1):
             try:
                 response = client.voices.list(type_=["prebuilt"], page_size=1000)
                 for voice in response.voices or []:
-                    voice_id = getattr(voice, "id", None) or getattr(voice, "display_name", None)
-                    gender = getattr(voice, "gender", None)
-                    if voice_id:
-                        catalog[str(voice_id)] = str(gender or "neutral").lower()
+                    voice_id = getattr(voice, "id", None)
+                    if voice_id in featured:
+                        catalog[str(voice_id)] = str(
+                            getattr(voice, "gender", None) or "neutral"
+                        ).lower()
                 if catalog:
                     break
             except Exception as exc:
-                self.log.warning("Voice catalog lookup key=#%d failed: %s", key_no, str(exc)[:500])
+                self.log.warning(
+                    "Featured voice catalog lookup key=#%d failed: %s",
+                    key_no,
+                    str(exc)[:500],
+                )
 
-        if not catalog:
-            self.log.warning("Voice catalog unavailable; falling back to configured voices")
-            return {
-                speaker: self.s.voices[i % len(self.s.voices)]
-                for i, speaker in enumerate(sorted(speaker_profiles))
-            }
+        # Never select an Extended Voice Library ID here.
+        available = [v for v in self.s.voices if v in featured]
+        if not available:
+            available = ["Kore", "Puck", "Charon", "Zephyr", "Fenrir", "Leda", "Orus", "Aoede"]
 
-        configured = [v for v in self.s.voices if v in catalog]
-        fallback_all = list(catalog.keys())
+        # API metadata is preferred. Conservative fallback keeps us inside the
+        # known featured set if metadata is unavailable.
+        fallback_gender = {
+            "Kore": "female",
+            "Aoede": "female",
+            "Leda": "female",
+            "Zephyr": "female",
+            "Achernar": "female",
+            "Callirrhoe": "female",
+            "Despina": "female",
+            "Erinome": "female",
+            "Laomedeia": "female",
+            "Autonoe": "female",
+            "Puck": "male",
+            "Charon": "male",
+            "Fenrir": "male",
+            "Orus": "male",
+            "Iapetus": "male",
+            "Algieba": "male",
+            "Algenib": "male",
+            "Rasalgethi": "male",
+            "Alnilam": "male",
+            "Gacrux": "male",
+            "Sadaltager": "male",
+            "Sulafat": "male",
+        }
+        for voice in available:
+            catalog.setdefault(voice, fallback_gender.get(voice, "neutral"))
+
         pools = {}
-
         for gender in ("male", "female", "neutral"):
-            preferred = [v for v in configured if catalog.get(v) == gender]
-            if not preferred:
-                preferred = [v for v in fallback_all if catalog.get(v) == gender]
-            pools[gender] = preferred or fallback_all
+            pool = [v for v in available if catalog.get(v) == gender]
+            pools[gender] = pool or available
 
         counters = {"male": 0, "female": 0, "neutral": 0}
         used = set()
@@ -311,7 +346,7 @@ class GeminiService:
         for speaker in sorted(speaker_profiles):
             gender = speaker_profiles[speaker].get("character_gender", "ambiguous")
             pool_gender = gender if gender in {"male", "female", "neutral"} else "neutral"
-            pool = pools[pool_gender] or fallback_all
+            pool = pools[pool_gender]
 
             candidate = None
             for _ in range(len(pool)):
@@ -323,7 +358,7 @@ class GeminiService:
             result[speaker] = candidate
             used.add(candidate)
 
-        self.log.info("Selected gender-aware voices: %s", result)
+        self.log.info("Selected featured gender-aware voices: %s", result)
         return result
 
     def _tts_request(self, client, model, segments, voices):
@@ -336,11 +371,18 @@ class GeminiService:
             speech_config = [{"voice": voices[speaker_ids[0]]}]
         else:
             names = {speaker_ids[0]: "Speaker 1", speaker_ids[1]: "Speaker 2"}
-            prompt = "\n".join(f'{names[s["speaker"]]}: {s["hindi"]}' for s in segments)
-            speech_config = [
-                {"speaker": "Speaker 1", "voice": voices[speaker_ids[0]]},
-                {"speaker": "Speaker 2", "voice": voices[speaker_ids[1]]},
-            ]
+            prompt = "\n".join(
+                f'{names[s["speaker"]]}: {s["hindi"]}' for s in segments
+            )
+            # Keep the speaker names identical to the names used in the prompt.
+            # This is the current Gemini multi-speaker Interactions schema.
+            speech_config = {
+                "mode": "conversational",
+                "speakers": [
+                    {"speaker": "Speaker 1", "voice": voices[speaker_ids[0]]},
+                    {"speaker": "Speaker 2", "voice": voices[speaker_ids[1]]},
+                ],
+            }
 
         return client.interactions.create(
             model=model,
