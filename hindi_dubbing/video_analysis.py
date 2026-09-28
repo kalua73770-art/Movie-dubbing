@@ -65,7 +65,7 @@ class VideoAnalyzer:
             media = client.files.get(name=media.name)
         raise TimeoutError('Timed out waiting for Gemini video file to become ACTIVE')
 
-    def _analyze_window(self, client, media, window_start, window_end, transcript_segments, registry):
+    def _analyze_window(self, client, model, media, window_start, window_end, transcript_segments, registry):
         transcript = '\n'.join(
             f'{s["id"]} | {s["start"]:.2f}-{s["end"]:.2f}s | {s["speaker"]} | {s["text"]}'
             for s in transcript_segments
@@ -86,7 +86,7 @@ class VideoAnalyzer:
             f'Timed transcript to annotate:\n{transcript}'
         )
         interaction = client.interactions.create(
-            model=self.s.video_model,
+            model=model,
             input=[
                 {'type': 'video', 'uri': media.uri, 'mime_type': getattr(media, 'mime_type', 'video/mp4'), 'processing': 'agentic'},
                 {'type': 'text', 'text': prompt},
@@ -147,20 +147,15 @@ class VideoAnalyzer:
                             window_end,
                             len(window_segments),
                         )
-                        # Temporarily use the selected model for this request.
-                        old_model = self.s.video_model
-                        self.s.video_model = model
-                        try:
-                            data = self._analyze_window(
-                                client,
-                                media,
-                                window_start,
-                                window_end,
-                                window_segments,
-                                registry,
-                            )
-                        finally:
-                            self.s.video_model = old_model
+                        data = self._analyze_window(
+                            client,
+                            model,
+                            media,
+                            window_start,
+                            window_end,
+                            window_segments,
+                            registry,
+                        )
 
                         for character in data['characters']:
                             cid = str(character.get('character_id') or '').strip()
