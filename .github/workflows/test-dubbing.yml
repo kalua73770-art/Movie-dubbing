@@ -28,7 +28,7 @@ jobs:
       GEMINI_TRANSCRIBE_MODEL: gemini-3.5-transcribe
       GEMINI_TEXT_MODELS: gemini-3.5-flash-lite,gemini-2.5-flash-lite
       GEMINI_TTS_MODELS: gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts
-      GEMINI_VIDEO_MODEL: gemini-3.8-flash
+      GEMINI_VIDEO_MODELS: gemini-3.8-flash,gemini-3.5-flash-lite,gemini-2.5-flash
       AUDIO_STEM_PROVIDER: tiger_hf
       PYTHONUNBUFFERED: "1"
 
