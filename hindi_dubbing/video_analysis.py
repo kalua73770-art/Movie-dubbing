@@ -120,6 +120,8 @@ class VideoAnalyzer:
         for model in self.s.video_models:
             model_failed = False
             for key_no, client in self._clients():
+                if key_no > self.s.video_max_keys_per_model:
+                    break
                 media = None
                 try:
                     self.log.info(
@@ -193,7 +195,7 @@ class VideoAnalyzer:
                     # 503/429 generally indicate temporary capacity or quota
                     # pressure for this model. Do not burn every key on the same
                     # overloaded model; immediately move to the next model.
-                    if any(code in message for code in ('503', '429', 'service_unavailable', 'too_many_requests')):
+                    if any(code in message.lower() for code in ('503', '429', 'service_unavailable', 'too_many_requests', 'server disconnected', 'readtimeout', 'timed out', 'timeout')):
                         break
 
             if model_failed:
