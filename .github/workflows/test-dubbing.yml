@@ -70,6 +70,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install .
 
+      - name: Preflight Python imports
+        run: |
+          python -m compileall -q hindi_dubbing
+          python -c "from google import genai; from google.genai import types; print('google-genai import OK'); print(types.HttpOptions(timeout=120000))"
+          python -c "from hindi_dubbing.settings import settings; from hindi_dubbing.gemini import GeminiService; from hindi_dubbing.video_analysis import VideoAnalyzer; from hindi_dubbing.pipeline.orchestrator import run_pipeline; print('pipeline imports OK')"
+
       - name: Run movie dubbing
         run: |
           mkdir -p test-output
