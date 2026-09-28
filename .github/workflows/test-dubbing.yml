@@ -34,6 +34,7 @@ jobs:
       GEMINI_TTS_MODELS: gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts
       GEMINI_VIDEO_MODELS: gemini-3.8-flash,gemini-3.5-flash-lite,gemini-2.5-flash
       AUDIO_STEM_PROVIDER: tiger_hf
+      GEMINI_HTTP_TIMEOUT_MS: "150000"
       PYTHONUNBUFFERED: "1"
 
     steps:
