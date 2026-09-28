@@ -66,3 +66,6 @@ class Settings:
     def validate(self):
         if not self.api_keys:
             raise RuntimeError("GEMINI_API_KEYS is missing or empty")
+
+
+settings = Settings()
