@@ -4,68 +4,66 @@ import os
 
 def _csv(name, default):
     value = os.getenv(name, default)
-    return [x.strip() for x in value.split(",") if x.strip()]
+    return [x.strip() for x in value.split(',') if x.strip()]
 
 
 @dataclass
 class Settings:
-    api_keys: list[str] = field(default_factory=lambda: _csv("GEMINI_API_KEYS", ""))
+    api_keys: list[str] = field(default_factory=lambda: _csv('GEMINI_API_KEYS', ''))
 
     text_models: list[str] = field(
         default_factory=lambda: _csv(
-            "GEMINI_TEXT_MODELS",
-            "gemini-3.5-flash-lite,gemini-2.5-flash-lite",
+            'GEMINI_TEXT_MODELS',
+            'gemini-3.5-flash-lite,gemini-2.5-flash-lite',
         )
     )
     tts_models: list[str] = field(
         default_factory=lambda: _csv(
-            "GEMINI_TTS_MODELS",
-            "gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts",
+            'GEMINI_TTS_MODELS',
+            'gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts',
         )
     )
-    transcribe_model: str = os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.5-transcribe")
-    video_models: list[str] = field(\n        default_factory=lambda: _csv(\n            "GEMINI_VIDEO_MODELS",\n            "gemini-3.8-flash,gemini-3.5-flash-lite,gemini-2.5-flash",\n        )\n    )
-
-    transcribe_chunk_seconds: int = int(os.getenv("TRANSCRIBE_CHUNK_SECONDS", "1740"))
-    transcribe_overlap_seconds: int = int(os.getenv("TRANSCRIBE_OVERLAP_SECONDS", "20"))
-
-    video_analysis_window_seconds: int = int(os.getenv("VIDEO_ANALYSIS_WINDOW_SECONDS", "600"))
-
-    translation_batch_chars: int = int(os.getenv("TRANSLATION_BATCH_CHARS", "6000"))
-    translation_chars_per_second: float = float(
-        os.getenv("TRANSLATION_CHARS_PER_SECOND", "12")
+    transcribe_model: str = os.getenv('GEMINI_TRANSCRIBE_MODEL', 'gemini-3.5-transcribe')
+    video_models: list[str] = field(
+        default_factory=lambda: _csv(
+            'GEMINI_VIDEO_MODELS',
+            'gemini-3.8-flash,gemini-3.5-flash-lite,gemini-2.5-flash',
+        )
     )
 
-    target_tts_min_ratio: float = float(os.getenv("TARGET_TTS_MIN_RATIO", "0.88"))
-    target_tts_max_ratio: float = float(os.getenv("TARGET_TTS_MAX_RATIO", "1.12"))
-    rewrite_attempts: int = int(os.getenv("TTS_REWRITE_ATTEMPTS", "2"))
+    transcribe_chunk_seconds: int = int(os.getenv('TRANSCRIBE_CHUNK_SECONDS', '1740'))
+    transcribe_overlap_seconds: int = int(os.getenv('TRANSCRIBE_OVERLAP_SECONDS', '20'))
+    video_analysis_window_seconds: int = int(os.getenv('VIDEO_ANALYSIS_WINDOW_SECONDS', '600'))
 
-    speaker_analysis_model: str = os.getenv(
-        "GEMINI_SPEAKER_MODEL", "gemini-3.5-flash-lite"
-    )
+    translation_batch_chars: int = int(os.getenv('TRANSLATION_BATCH_CHARS', '6000'))
+    translation_chars_per_second: float = float(os.getenv('TRANSLATION_CHARS_PER_SECOND', '12'))
 
-    # Audio separation is handled remotely so Render/GitHub do not need a local ML model.
-    audio_stem_provider: str = os.getenv("AUDIO_STEM_PROVIDER", "tiger_hf")
-    audio_separation_chunk_seconds: int = int(
-        os.getenv("AUDIO_SEPARATION_CHUNK_SECONDS", "600")
-    )
-    audio_separation_space: str = os.getenv(
-        "AUDIO_SEPARATION_SPACE", "WAVbot/TIGER-audio-extraction"
-    )
+    target_tts_min_ratio: float = float(os.getenv('TARGET_TTS_MIN_RATIO', '0.88'))
+    target_tts_max_ratio: float = float(os.getenv('TARGET_TTS_MAX_RATIO', '1.12'))
+    rewrite_attempts: int = int(os.getenv('TTS_REWRITE_ATTEMPTS', '2'))
 
-    work_dir: str = os.getenv("WORK_DIR", "/tmp/movie-dubbing")
-    output_dir: str = os.getenv("OUTPUT_DIR", "/tmp/movie-dubbing/outputs")
+    speaker_analysis_model: str = os.getenv('GEMINI_SPEAKER_MODEL', 'gemini-3.5-flash-lite')
+
+    audio_stem_provider: str = os.getenv('AUDIO_STEM_PROVIDER', 'tiger_hf')
+    audio_separation_chunk_seconds: int = int(os.getenv('AUDIO_SEPARATION_CHUNK_SECONDS', '600'))
+    audio_separation_space: str = os.getenv('AUDIO_SEPARATION_SPACE', 'WAVbot/TIGER-audio-extraction')
+
+    work_dir: str = os.getenv('WORK_DIR', '/tmp/movie-dubbing')
+    output_dir: str = os.getenv('OUTPUT_DIR', '/tmp/movie-dubbing/outputs')
 
     voices: list[str] = field(
         default_factory=lambda: _csv(
-            "GEMINI_VOICES",
-            "Kore,Puck,Charon,Zephyr,Fenrir,Leda,Orus,Aoede",
+            'GEMINI_VOICES',
+            'Kore,Puck,Charon,Zephyr,Fenrir,Leda,Orus,Aoede',
         )
     )
 
     def validate(self):
         if not self.api_keys:
-            raise RuntimeError("GEMINI_API_KEYS is missing or empty")
+            raise RuntimeError('GEMINI_API_KEYS is missing or empty')
 
 
 settings = Settings()
+
+
+__all__ = ['Settings', 'settings']
