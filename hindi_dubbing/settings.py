@@ -34,6 +34,7 @@ class Settings:
     transcribe_chunk_seconds: int = int(os.getenv('TRANSCRIBE_CHUNK_SECONDS', '1740'))
     transcribe_overlap_seconds: int = int(os.getenv('TRANSCRIBE_OVERLAP_SECONDS', '20'))
     video_analysis_window_seconds: int = int(os.getenv('VIDEO_ANALYSIS_WINDOW_SECONDS', '600'))
+    gemini_http_timeout_ms: int = int(os.getenv('GEMINI_HTTP_TIMEOUT_MS', '150000'))
 
     translation_batch_chars: int = int(os.getenv('TRANSLATION_BATCH_CHARS', '6000'))
     translation_chars_per_second: float = float(os.getenv('TRANSLATION_CHARS_PER_SECOND', '12'))
