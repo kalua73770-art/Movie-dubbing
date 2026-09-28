@@ -4,8 +4,6 @@ on:
   push:
     paths:
       - "test/input.mp4"
-      - "hindi_dubbing/**"
-      - ".github/workflows/test-dubbing.yml"
   workflow_dispatch:
     inputs:
       video_path:
