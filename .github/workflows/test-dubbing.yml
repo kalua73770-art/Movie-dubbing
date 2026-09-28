@@ -1,5 +1,9 @@
 name: Movie Dubbing Test
 
+concurrency:
+  group: movie-dubbing-test
+  cancel-in-progress: true
+
 on:
   push:
     paths:
