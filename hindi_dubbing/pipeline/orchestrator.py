@@ -253,7 +253,9 @@ def run_pipeline(source_video: Path, output_video: Path, progress: Progress | No
             registry = _build_fallback_registry(segments)
             _merge_video_annotations(segments, [], registry)
 
-        registry.update(_build_fallback_registry(segments))
+        fallback_registry = _build_fallback_registry(segments)
+        for cid, fallback in fallback_registry.items():
+            registry.setdefault(cid, fallback)
         voice_map = gemini.choose_voices(registry)
         for segment in segments:
             segment['voice'] = voice_map[segment['character_id']]
