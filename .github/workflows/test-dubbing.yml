@@ -4,6 +4,9 @@ on:
   push:
     paths:
       - "test/input.mp4"
+      - "hindi_dubbing/**"
+      - "pyproject.toml"
+      - ".github/workflows/test-dubbing.yml"
   workflow_dispatch:
     inputs:
       video_path:
@@ -24,7 +27,9 @@ jobs:
       GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
       GEMINI_TRANSCRIBE_MODEL: gemini-3.5-transcribe
       GEMINI_TEXT_MODELS: gemini-3.5-flash-lite,gemini-2.5-flash-lite
-      GEMINI_TTS_MODELS: gemini-2.5-flash-preview-tts,gemini-3.1-flash-tts-preview
+      GEMINI_TTS_MODELS: gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts
+      GEMINI_VIDEO_MODEL: gemini-3.8-flash
+      AUDIO_STEM_PROVIDER: tiger_hf
       PYTHONUNBUFFERED: "1"
 
     steps:
