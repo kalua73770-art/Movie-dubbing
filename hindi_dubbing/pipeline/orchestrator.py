@@ -125,7 +125,8 @@ def _merge_video_annotations(segments, annotations, registry):
 def _build_fallback_registry(segments):
     registry = {}
     for s in segments:
-        cid = s['character_id']
+        cid = s.get('character_id') or f"CHAR_{s.get('speaker', 'unknown')}"
+        s['character_id'] = cid
         registry.setdefault(cid, {
             'character_id': cid,
             'name': cid,
@@ -226,7 +227,7 @@ def run_pipeline(source_video: Path, output_video: Path, progress: Progress | No
         )
         gemini = GeminiService(settings, log)
         state['models']['transcribe'] = settings.transcribe_model
-        state['models']['video'] = settings.video_model
+        state['models']['video'] = settings.video_models
         state['models']['tts'] = settings.tts_models
 
         all_segments = []
