@@ -8,32 +8,35 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable
 
+from hindi_dubbing.audio_separation import separate_background
 from hindi_dubbing.core.audio.processor import (
     assemble_track,
     extract_audio,
     extract_range,
-    ffprobe_duration,
     fit_audio,
-    silence_ranges,
+    ffprobe_duration,
+    probe_wav,
+    run_cmd,
     split_audio,
 )
-from hindi_dubbing.core.mixing.mixer import mix_and_duck
+from hindi_dubbing.core.mixing.mixer import mix_final
 from hindi_dubbing.gemini import GeminiService
 from hindi_dubbing.settings import settings
+from hindi_dubbing.video_analysis import VideoAnalyzer
 
 Progress = Callable[[str, str], None]
 
 
 def _logger(job_dir: Path) -> logging.Logger:
-    logger = logging.getLogger(f"dubbing.{job_dir.name}")
+    logger = logging.getLogger(f'dubbing.{job_dir.name}')
     logger.setLevel(logging.INFO)
     logger.propagate = False
     if logger.handlers:
         return logger
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+    formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s')
     sh = logging.StreamHandler()
     sh.setFormatter(formatter)
-    fh = logging.FileHandler(job_dir / "pipeline.log", encoding="utf-8")
+    fh = logging.FileHandler(job_dir / 'pipeline.log', encoding='utf-8')
     fh.setFormatter(formatter)
     logger.addHandler(sh)
     logger.addHandler(fh)
@@ -41,356 +44,279 @@ def _logger(job_dir: Path) -> logging.Logger:
 
 
 def _state(path: Path, data: dict) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
 def _norm(text: str) -> str:
-    return re.sub(r"\W+", "", text.lower(), flags=re.UNICODE)
+    return re.sub(r'\W+', '', text.lower(), flags=re.UNICODE)
 
 
 def _overlap(a0, a1, b0, b1) -> float:
     return max(0.0, min(a1, b1) - max(a0, b0))
 
 
-def _reconcile_speakers(local_segments: list[dict], chunk_start: float, previous: list[dict], next_id: list[int]) -> list[dict]:
-    mapping: dict[str, str] = {}
-    local_ids = list(dict.fromkeys(s["speaker"] for s in local_segments))
-    overlap_start = chunk_start - 1.0
-    overlap_end = chunk_start + settings.transcribe_overlap_seconds + 1.0
-
-    for lid in local_ids:
-        candidates: dict[str, float] = {}
-        for p in previous:
-            if p["end"] < overlap_start or p["start"] > overlap_end:
-                continue
-            for s in local_segments:
-                if s["speaker"] != lid:
-                    continue
-                a0, a1 = chunk_start + float(s["start"]), chunk_start + float(s["end"])
-                candidates[p["speaker"]] = candidates.get(p["speaker"], 0.0) + _overlap(
-                    a0, a1, p["start"], p["end"]
-                )
-        if candidates:
-            best, score = max(candidates.items(), key=lambda kv: kv[1])
-            if score >= 0.15:
-                mapping[lid] = best
-        if lid not in mapping:
-            mapping[lid] = f"spk_{next_id[0]}"
-            next_id[0] += 1
-
-    out = []
-    for s in local_segments:
-        x = dict(s)
-        x["speaker"] = mapping[x["speaker"]]
-        x["start"] = chunk_start + float(s["start"])
-        x["end"] = chunk_start + float(s["end"])
-        out.append(x)
-    return out
-
-
 def _dedupe_segments(segments: list[dict]) -> list[dict]:
-    kept: list[dict] = []
-    for s in sorted(segments, key=lambda x: (x["start"], x["end"])):
-        if not s.get("text", "").strip():
+    kept = []
+    for s in sorted(segments, key=lambda x: (x['start'], x['end'])):
+        if not s.get('text', '').strip():
             continue
         duplicate = None
-        for i in range(max(0, len(kept) - 15), len(kept)):
+        for i in range(max(0, len(kept) - 20), len(kept)):
             p = kept[i]
-            if p["speaker"] != s["speaker"]:
+            if p['speaker'] != s['speaker']:
                 continue
-            overlap = _overlap(p["start"], p["end"], s["start"], s["end"])
-            sim = SequenceMatcher(None, _norm(p["text"]), _norm(s["text"])).ratio()
-            if overlap >= 0.25 or (abs(p["start"] - s["start"]) < 0.9 and sim >= 0.70):
-                if sim >= 0.65 or overlap >= 0.80:
-                    duplicate = i
-                    break
+            ov = _overlap(p['start'], p['end'], s['start'], s['end'])
+            sim = SequenceMatcher(None, _norm(p['text']), _norm(s['text'])).ratio()
+            if ov >= 0.5 or (abs(p['start'] - s['start']) < 0.8 and sim >= 0.72):
+                duplicate = i
+                break
         if duplicate is None:
-            kept.append(s)
-        elif len(s["text"]) > len(kept[duplicate]["text"]):
-            kept[duplicate] = s
-
+            kept.append(dict(s))
+        elif len(s['text']) > len(kept[duplicate]['text']):
+            kept[duplicate] = dict(s)
     for i, s in enumerate(kept):
-        s["id"] = f"seg_{i:06d}"
+        s['id'] = f'seg_{i:06d}'
     return kept
 
 
 def _batch_by_chars(items: list[dict], limit: int) -> list[list[dict]]:
-    batches: list[list[dict]] = []
-    cur: list[dict] = []
-    total = 0
+    batches, current, total = [], [], 0
     for item in items:
-        cost = len(item.get("text", "")) + 32
-        if cur and total + cost > limit:
-            batches.append(cur)
-            cur, total = [], 0
-        cur.append(item)
+        cost = len(item.get('text', '')) + 80
+        if current and total + cost > limit:
+            batches.append(current)
+            current, total = [], 0
+        current.append(item)
         total += cost
-    if cur:
-        batches.append(cur)
+    if current:
+        batches.append(current)
     return batches
 
 
-def _tts_batches(segments: list[dict], max_seconds: int, max_chars: int) -> list[list[dict]]:
-    batches: list[list[dict]] = []
-    cur: list[dict] = []
-    cur_start = cur_end = None
-    chars = 0
-    speakers: set[str] = set()
+def _merge_video_annotations(segments, annotations, registry):
+    by_id = {str(a.get('segment_id')): a for a in annotations if a.get('segment_id')}
+    for segment in segments:
+        ann = by_id.get(segment['id'])
+        if ann is None:
+            overlaps = [
+                a for a in annotations
+                if a.get('start') is not None and a.get('end') is not None
+                and _overlap(segment['start'], segment['end'], float(a['start']), float(a['end'])) > 0
+            ]
+            ann = overlaps[0] if overlaps else None
 
+        if ann:
+            cid = str(ann.get('character_id') or '').strip()
+            if cid:
+                segment['character_id'] = cid
+            for key in ('emotion', 'pace', 'intensity', 'style'):
+                if ann.get(key):
+                    segment[key] = ann[key]
+        if not segment.get('character_id'):
+            segment['character_id'] = f'CHAR_{segment["speaker"]}'
+
+        profile = registry.get(segment['character_id'], {})
+        segment['voice_profile'] = profile.get('voice_profile', '')
+        segment['character_name'] = profile.get('name', segment['character_id'])
+
+    return segments
+
+
+def _build_fallback_registry(segments):
+    registry = {}
     for s in segments:
-        n_chars = len(s.get("hindi", "")) + 16
-        if cur:
-            span = max(cur_end or s["end"], s["end"]) - min(cur_start or s["start"], s["start"])
-            too_big = span > max_seconds or chars + n_chars > max_chars
-            too_many_speakers = len(speakers | {s["speaker"]}) > 2
-            if too_big or too_many_speakers:
-                batches.append(cur)
-                cur, cur_start, cur_end, chars, speakers = [], None, None, 0, set()
-        cur.append(s)
-        cur_start = s["start"] if cur_start is None else min(cur_start, s["start"])
-        cur_end = s["end"] if cur_end is None else max(cur_end, s["end"])
-        chars += n_chars
-        speakers.add(s["speaker"])
-
-    if cur:
-        batches.append(cur)
-    return batches
+        cid = s['character_id']
+        registry.setdefault(cid, {
+            'character_id': cid,
+            'name': cid,
+            'gender': 'ambiguous',
+            'age_group': 'unknown',
+            'voice_profile': '',
+            'personality': '',
+        })
+    return registry
 
 
-def _build_speaker_sample(source_audio: Path, speaker_segments: list[dict], out_dir: Path, speaker: str, log: logging.Logger) -> Path:
-    """Build a short concatenated audio sample for character/voice analysis."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    items = []
-    cursor = 0.0
+def _make_mix_audio(source_video: Path, out: Path, log):
+    out.parent.mkdir(parents=True, exist_ok=True)
+    run_cmd([
+        'ffmpeg', '-y', '-i', source_video, '-vn',
+        '-ac', '2', '-ar', '48000', '-c:a', 'pcm_s16le', out
+    ], log)
 
-    for idx, segment in enumerate(sorted(speaker_segments, key=lambda x: x["start"])):
-        duration = min(3.5, max(0.0, float(segment["end"]) - float(segment["start"])))
-        if duration < 0.35:
-            continue
 
-        raw = out_dir / f"{speaker}_{idx:02d}.wav"
-        extract_range(
-            source_audio,
-            raw,
-            float(segment["start"]),
-            float(segment["start"]) + duration,
-            log,
+def _generate_segment_audio(gemini, segment, voice, segment_dir, log):
+    target = max(0.20, float(segment['end']) - float(segment['start']))
+    attempts = max(0, int(settings.rewrite_attempts))
+    for attempt in range(attempts + 1):
+        raw = segment_dir / f'{segment["id"]}_attempt{attempt}.wav'
+        gemini.tts_segment(segment, voice, raw)
+        observed = probe_wav(raw)[3]
+        ratio = observed / target if target else 1.0
+        log.info(
+            'Dialogue %s target=%.3fs generated=%.3fs ratio=%.3f attempt=%d',
+            segment['id'], target, observed, ratio, attempt,
         )
-        items.append((cursor, cursor + duration, raw))
-        cursor += duration + 0.15
+        if settings.target_tts_min_ratio <= ratio <= settings.target_tts_max_ratio:
+            segment['tts_duration'] = observed
+            return raw
+        if attempt < attempts:
+            segment['hindi'] = gemini.rewrite_for_observed_duration(segment, observed)
 
-        if cursor >= 8.0:
-            break
-
-    if not items:
-        raise RuntimeError(f"No usable audio found for speaker {speaker}")
-
-    sample = out_dir / f"{speaker}_sample.wav"
-    assemble_track(items, cursor, sample)
-    return sample
-
-
-def _partition_ranges(ranges: list[tuple[float, float]], target_durations: list[float]) -> list[list[tuple[float, float]]]:
-    if not ranges or not target_durations or len(ranges) < len(target_durations):
-        return [[] for _ in target_durations]
-
-    n, g = len(ranges), len(target_durations)
-    prefix = [0.0]
-    for a, b in ranges:
-        prefix.append(prefix[-1] + max(0.0, b - a))
-
-    inf = float("inf")
-    dp = [[inf] * (n + 1) for _ in range(g + 1)]
-    parent = [[-1] * (n + 1) for _ in range(g + 1)]
-    dp[0][0] = 0.0
-
-    for groups in range(1, g + 1):
-        for j in range(groups, n + 1):
-            for k in range(groups - 1, j):
-                dur = prefix[j] - prefix[k]
-                target = target_durations[groups - 1]
-                value = dp[groups - 1][k] + (dur - target) ** 2
-                if value < dp[groups][j]:
-                    dp[groups][j] = value
-                    parent[groups][j] = k
-
-    if parent[g][n] < 0:
-        return [[] for _ in target_durations]
-
-    groups: list[list[tuple[float, float]]] = []
-    j = n
-    for gi in range(g, 0, -1):
-        k = parent[gi][j]
-        groups.append(ranges[k:j])
-        j = k
-    groups.reverse()
-    return groups
-
-
-def _assign_batch_audio(batch, generated: Path, base_dir: Path, log: logging.Logger, batch_no: int):
-    ranges = silence_ranges(generated, log=log)
-    if not ranges:
-        from hindi_dubbing.core.audio.processor import probe_wav
-        ranges = [(0.0, probe_wav(generated)[3])]
-
-    targets = [max(0.15, s["end"] - s["start"]) for s in batch]
-    groups = _partition_ranges(ranges, targets)
-
-    if any(not g for g in groups):
-        from hindi_dubbing.core.audio.processor import probe_wav
-        total_audio = probe_wav(generated)[3]
-        total_target = sum(targets)
-        groups = []
-        cursor = 0.0
-        for target in targets:
-            piece = total_audio * (target / total_target)
-            groups.append([(cursor, min(total_audio, cursor + piece))])
-            cursor += piece
-
-    paths = []
-    for i, (segment, rg) in enumerate(zip(batch, groups)):
-        start, end = rg[0][0], rg[-1][1]
-        raw = base_dir / f"batch_{batch_no:04d}_{i:02d}_raw.wav"
-        fit = base_dir / f"batch_{batch_no:04d}_{i:02d}.wav"
-        extract_range(generated, raw, start, end, log)
-        fit_audio(raw, fit, max(0.12, segment["end"] - segment["start"]), log)
-        paths.append(fit)
-    return paths
+    # Final correction is deliberately small. Large time-stretching is avoided until
+    # all linguistic duration-aware attempts have failed.
+    final_ratio = observed / target if target else 1.0
+    if 0.75 <= final_ratio <= 1.30:
+        fit = segment_dir / f'{segment["id"]}.wav'
+        fit_audio(raw, fit, target, log)
+        segment['tts_duration'] = probe_wav(fit)[3]
+        segment['tts_time_stretch'] = final_ratio
+        return fit
+    raise RuntimeError(f'Could not produce natural-duration TTS for {segment["id"]}: {observed:.2f}s vs {target:.2f}s')
 
 
 def run_pipeline(source_video: Path, output_video: Path, progress: Progress | None = None, job_id: str | None = None) -> Path:
     settings.validate()
     job_id = job_id or uuid.uuid4().hex[:12]
-    work = Path(settings.work_dir) / "jobs" / job_id
-    chunks_dir, audio_dir = work / "chunks", work / "audio"
-    tts_dir, segments_dir = work / "tts", work / "segments"
-    for p in (chunks_dir, audio_dir, tts_dir, segments_dir):
-        p.mkdir(parents=True, exist_ok=True)
+    work = Path(settings.work_dir) / 'jobs' / job_id
+    chunks_dir = work / 'chunks'
+    audio_dir = work / 'audio'
+    segments_dir = work / 'segments'
+    for directory in (chunks_dir, audio_dir, segments_dir):
+        directory.mkdir(parents=True, exist_ok=True)
 
     log = _logger(work)
-    manifest = work / "project.json"
+    manifest = work / 'project.json'
     state = {
-        "job_id": job_id, "status": "running", "stage": "starting",
-        "source": str(source_video), "output": str(output_video),
-        "segments": [], "speakers": {}, "models": {}
+        'job_id': job_id,
+        'status': 'running',
+        'stage': 'starting',
+        'source': str(source_video),
+        'output': str(output_video),
+        'segments': [],
+        'characters': {},
+        'models': {},
     }
     _state(manifest, state)
 
-    def report(stage: str, message: str):
-        state["stage"], state["message"] = stage, message
+    def report(stage, message):
+        state['stage'] = stage
+        state['message'] = message
         _state(manifest, state)
         if progress:
             try:
                 progress(stage, message)
             except Exception:
                 pass
-        log.info("%s: %s", stage, message)
+        log.info('%s: %s', stage, message)
 
     try:
-        report("audio", "Extracting source audio with FFmpeg")
-        source_audio = audio_dir / "source.wav"
+        report('audio', 'Extracting precision transcription and mix audio')
+        source_audio = audio_dir / 'source_16k.wav'
+        mix_audio = audio_dir / 'source_48k.wav'
         extract_audio(source_video, source_audio, log)
+        _make_mix_audio(source_video, mix_audio, log)
         duration = ffprobe_duration(source_video)
+
         chunks = split_audio(
             source_audio, chunks_dir, duration,
             settings.transcribe_chunk_seconds,
-            settings.transcribe_overlap_seconds, log
+            settings.transcribe_overlap_seconds,
+            log,
         )
-        report("audio", f"Prepared {len(chunks)} transcription chunk(s)")
-
         gemini = GeminiService(settings, log)
-        all_segments: list[dict] = []
-        next_speaker = [1]
+        state['models']['transcribe'] = settings.transcribe_model
+        state['models']['video'] = settings.video_model
+        state['models']['tts'] = settings.tts_models
 
+        all_segments = []
         for idx, (chunk, start, end) in enumerate(chunks):
-            report("transcription", f"Transcribing chunk {idx + 1}/{len(chunks)}")
+            report('transcription', f'Transcribing chunk {idx + 1}/{len(chunks)}')
             local = gemini.transcribe(chunk)
-            mapped = _reconcile_speakers(local, start, all_segments, next_speaker)
-            all_segments.extend(mapped)
-        state["models"]["transcribe"] = settings.transcribe_model
+            for segment in local:
+                item = dict(segment)
+                item['start'] += start
+                item['end'] += start
+                all_segments.append(item)
 
         segments = _dedupe_segments(all_segments)
         if not segments:
-            raise RuntimeError("No speech segments returned by Gemini Transcribe")
+            raise RuntimeError('No speech segments returned by Gemini Transcribe')
 
-        speakers = sorted(set(s["speaker"] for s in segments), key=lambda x: x)
-        report("transcription", f"Found {len(segments)} dialogue segments / {len(speakers)} speakers")
+        report('video', 'Using Gemini video understanding for visible character and acting analysis')
+        registry = {}
+        try:
+            annotations, registry = VideoAnalyzer(settings, log).analyze(source_video, segments)
+            _merge_video_annotations(segments, annotations, registry)
+        except Exception as exc:
+            log.warning('Video analysis failed; using audio diarization fallback: %s', str(exc)[:1200])
+            registry = _build_fallback_registry(segments)
+            _merge_video_annotations(segments, [], registry)
 
-        report("speakers", "Analyzing character voices and selecting gender-aware TTS voices")
-        speaker_samples_dir = work / "speakers"
-        speaker_profiles = {}
-        speaker_segments = {
-            sp: [s for s in segments if s["speaker"] == sp]
-            for sp in speakers
+        registry.update(_build_fallback_registry(segments))
+        voice_map = gemini.choose_voices(registry)
+        for segment in segments:
+            segment['voice'] = voice_map[segment['character_id']]
+
+        state['characters'] = {
+            cid: {**registry.get(cid, {}), 'voice': voice_map[cid]}
+            for cid in voice_map
         }
-        for sp in speakers:
-            sample = _build_speaker_sample(
-                source_audio,
-                speaker_segments[sp],
-                speaker_samples_dir,
-                sp,
+        report('video', f'Locked {len(voice_map)} character voices and acting profiles')
+
+        report('translation', 'Generating duration-aware Hindi dialogue')
+        for batch_no, batch in enumerate(_batch_by_chars(segments, settings.translation_batch_chars), 1):
+            report('translation', f'Translation batch {batch_no}')
+            translated = gemini.translate_for_duration(batch)
+            for segment in batch:
+                segment['hindi'] = translated[segment['id']]
+
+        audio_items = []
+        report('tts', 'Synthesizing each dialogue line with locked character voice and acting style')
+        for idx, segment in enumerate(segments, 1):
+            report('tts', f'Dialogue {idx}/{len(segments)}')
+            audio_path = _generate_segment_audio(
+                gemini,
+                segment,
+                voice_map[segment['character_id']],
+                segments_dir,
                 log,
             )
-            context = " ".join(s["text"] for s in speaker_segments[sp][:12])
-            speaker_profiles[sp] = gemini.classify_speaker(sample, context)
-            try:
-                sample.unlink()
-            except Exception:
-                pass
+            segment['audio_path'] = str(audio_path)
+            audio_items.append((segment['start'], segment['end'], audio_path))
 
-        voice_map = gemini.choose_voices(speaker_profiles)
-        state["speakers"] = {
-            sp: {
-                **speaker_profiles[sp],
-                "voice": voice_map[sp],
-            }
-            for sp in speakers
-        }
-
-        report("translation", "Translating dialogue with Gemini Flash-Lite")
-        for no, batch in enumerate(_batch_by_chars(segments, settings.translation_batch_chars), 1):
-            report("translation", f"Translation batch {no}")
-            mapping = gemini.translate_batch(batch)
-            for s in batch:
-                s["hindi"] = mapping[s["id"]]
-        state["models"]["translation"] = settings.text_models
-
-        report("tts", "Generating Hindi speech in large batches")
-        audio_items: list[tuple[float, float, Path]] = []
-        batches = _tts_batches(segments, settings.tts_batch_seconds, settings.tts_batch_chars)
-
-        for bno, batch in enumerate(batches, 1):
-            report("tts", f"TTS batch {bno}/{len(batches)}")
-            batch_audio = tts_dir / f"batch_{bno:04d}.wav"
-            gemini.tts(batch, voice_map, batch_audio)
-            state["models"]["tts"] = settings.tts_models
-            mapped_audio = _assign_batch_audio(batch, batch_audio, segments_dir, log, bno)
-            if len(mapped_audio) != len(batch):
-                raise RuntimeError("Could not map generated batch audio back to dialogue segments")
-            for s, audio in zip(batch, mapped_audio):
-                s["audio_path"] = str(audio)
-                audio_items.append((s["start"], s["end"], audio))
-
-        report("mix", "Building Hindi dialogue timeline")
-        dialogue_track = audio_dir / "hindi_dialogue.wav"
+        report('mix', 'Building Hindi dialogue timeline')
+        dialogue_track = audio_dir / 'hindi_dialogue.wav'
         assemble_track(audio_items, duration, dialogue_track)
 
-        report("render", "Ducking original audio and rendering final movie")
-        output_video.parent.mkdir(parents=True, exist_ok=True)
-        mix_and_duck(source_video, dialogue_track, output_video, segments=segments, log=log)
+        report('separation', f'Separating dialogue/music/effects via {settings.audio_stem_provider}')
+        background = separate_background(mix_audio, work, settings, log)
 
-        state["segments"] = segments
-        state["status"], state["stage"] = "completed", "done"
+        report('render', 'Rendering final movie with background/SFX preserved when available')
+        output_video.parent.mkdir(parents=True, exist_ok=True)
+        mix_final(
+            source_video,
+            dialogue_track,
+            background,
+            output_video,
+            segments=segments,
+            log=log,
+        )
+
+        state['segments'] = segments
+        state['status'] = 'completed'
+        state['stage'] = 'done'
         _state(manifest, state)
-        report("done", "Hindi dubbed movie is ready")
+        report('done', 'High-quality Hindi dub is ready')
         return output_video
     except Exception as exc:
-        state["status"], state["error"] = "failed", str(exc)
+        state['status'] = 'failed'
+        state['error'] = str(exc)
         _state(manifest, state)
-        log.exception("Pipeline failed")
+        log.exception('Pipeline failed')
         if progress:
             try:
-                progress("error", str(exc))
+                progress('error', str(exc))
             except Exception:
                 pass
         raise
