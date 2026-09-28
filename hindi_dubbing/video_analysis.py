@@ -104,6 +104,7 @@ class VideoAnalyzer:
         duration = max((float(s['end']) for s in transcript_segments), default=0.0)
         if duration <= 0:
             return [], {}
+
         window_len = self.s.video_analysis_window_seconds
         windows = []
         start = 0.0
@@ -113,35 +114,94 @@ class VideoAnalyzer:
             start = end
 
         last_error = None
-        for key_no, client in self._clients():
-            media = None
-            try:
-                self.log.info('Video analysis model=%s key=#%d windows=%d', self.s.video_model, key_no, len(windows))
-                media = self._upload(client, video_path)
-                annotations = []
-                registry = {}
-                for window_start, window_end in windows:
-                    window_segments = [s for s in transcript_segments if float(s['end']) > window_start and float(s['start']) < window_end]
-                    if not window_segments:
-                        continue
-                    self.log.info('Video analysis window %.2f-%.2fs segments=%d', window_start, window_end, len(window_segments))
-                    data = self._analyze_window(client, media, window_start, window_end, window_segments, registry)
-                    for character in data['characters']:
-                        cid = str(character.get('character_id') or '').strip()
-                        if cid:
-                            registry.setdefault(cid, {}).update({k: v for k, v in character.items() if v not in (None, '')})
-                    annotations.extend([a for a in data['annotations'] if a.get('segment_id')])
+
+        # Try the newest video model first, then fall back to multimodal models
+        # that also support agentic video understanding.
+        for model in self.s.video_models:
+            model_failed = False
+            for key_no, client in self._clients():
+                media = None
                 try:
-                    client.files.delete(name=media.name)
-                except Exception:
-                    pass
-                return annotations, registry
-            except Exception as exc:
-                last_error = exc
-                self.log.warning('Video analysis key=#%d failed: %s', key_no, str(exc)[:1200])
-                if media is not None:
+                    self.log.info(
+                        'Video analysis model=%s key=#%d windows=%d',
+                        model,
+                        key_no,
+                        len(windows),
+                    )
+                    media = self._upload(client, video_path)
+
+                    annotations = []
+                    registry = {}
+                    for window_start, window_end in windows:
+                        window_segments = [
+                            s for s in transcript_segments
+                            if float(s['end']) > window_start and float(s['start']) < window_end
+                        ]
+                        if not window_segments:
+                            continue
+
+                        self.log.info(
+                            'Video analysis model=%s window %.2f-%.2fs segments=%d',
+                            model,
+                            window_start,
+                            window_end,
+                            len(window_segments),
+                        )
+                        # Temporarily use the selected model for this request.
+                        old_model = self.s.video_model
+                        self.s.video_model = model
+                        try:
+                            data = self._analyze_window(
+                                client,
+                                media,
+                                window_start,
+                                window_end,
+                                window_segments,
+                                registry,
+                            )
+                        finally:
+                            self.s.video_model = old_model
+
+                        for character in data['characters']:
+                            cid = str(character.get('character_id') or '').strip()
+                            if cid:
+                                registry.setdefault(cid, {}).update({
+                                    k: v for k, v in character.items()
+                                    if v not in (None, '')
+                                })
+                        annotations.extend([
+                            a for a in data['annotations'] if a.get('segment_id')
+                        ])
+
                     try:
                         client.files.delete(name=media.name)
                     except Exception:
                         pass
-        raise RuntimeError(f'Gemini video analysis failed on all API keys: {last_error}')
+                    return annotations, registry
+
+                except Exception as exc:
+                    last_error = exc
+                    message = str(exc)
+                    self.log.warning(
+                        'Video analysis model=%s key=#%d failed: %s',
+                        model,
+                        key_no,
+                        message[:1200],
+                    )
+                    model_failed = True
+                    if media is not None:
+                        try:
+                            client.files.delete(name=media.name)
+                        except Exception:
+                            pass
+
+                    # 503/429 generally indicate temporary capacity or quota
+                    # pressure for this model. Do not burn every key on the same
+                    # overloaded model; immediately move to the next model.
+                    if any(code in message for code in ('503', '429', 'service_unavailable', 'too_many_requests')):
+                        break
+
+            if model_failed:
+                self.log.info('Trying next video model after failure of %s', model)
+
+        raise RuntimeError(f'Gemini video analysis failed on all models/keys: {last_error}')
