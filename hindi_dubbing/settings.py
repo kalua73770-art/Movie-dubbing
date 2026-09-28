@@ -24,7 +24,7 @@ class Settings:
         )
     )
     transcribe_model: str = os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.5-transcribe")
-    video_models: list[str] = field(\n        default_factory=lambda: _csv("GEMINI_VIDEO_MODELS", "gemini-3.8-flash,gemini-3.5-flash-lite,gemini-2.5-flash")\n    )
+    video_models: list[str] = field(\n        default_factory=lambda: _csv(\n            "GEMINI_VIDEO_MODELS",\n            "gemini-3.8-flash,gemini-3.5-flash-lite,gemini-2.5-flash",\n        )\n    )
 
     transcribe_chunk_seconds: int = int(os.getenv("TRANSCRIBE_CHUNK_SECONDS", "1740"))
     transcribe_overlap_seconds: int = int(os.getenv("TRANSCRIBE_OVERLAP_SECONDS", "20"))
