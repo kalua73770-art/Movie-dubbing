@@ -7,7 +7,7 @@ import re
 import wave
 from pathlib import Path
 
-from google import genai
+from google import genai, types
 
 
 class GeminiService:
