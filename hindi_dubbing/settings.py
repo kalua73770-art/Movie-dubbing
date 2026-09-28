@@ -27,14 +27,15 @@ class Settings:
     video_models: list[str] = field(
         default_factory=lambda: _csv(
             'GEMINI_VIDEO_MODELS',
-            'gemini-3.8-flash,gemini-3.5-flash-lite,gemini-2.5-flash',
+            'gemini-3.5-flash-lite,gemini-3.8-flash,gemini-2.5-flash',
         )
     )
 
     transcribe_chunk_seconds: int = int(os.getenv('TRANSCRIBE_CHUNK_SECONDS', '1740'))
     transcribe_overlap_seconds: int = int(os.getenv('TRANSCRIBE_OVERLAP_SECONDS', '20'))
     video_analysis_window_seconds: int = int(os.getenv('VIDEO_ANALYSIS_WINDOW_SECONDS', '600'))
-    gemini_http_timeout_ms: int = int(os.getenv('GEMINI_HTTP_TIMEOUT_MS', '150000'))
+    gemini_http_timeout_ms: int = int(os.getenv('GEMINI_HTTP_TIMEOUT_MS', '120000'))
+    video_max_keys_per_model: int = int(os.getenv('VIDEO_MAX_KEYS_PER_MODEL', '2'))
 
     translation_batch_chars: int = int(os.getenv('TRANSLATION_BATCH_CHARS', '6000'))
     translation_chars_per_second: float = float(os.getenv('TRANSLATION_CHARS_PER_SECOND', '12'))
