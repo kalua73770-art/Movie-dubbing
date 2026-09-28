@@ -361,6 +361,92 @@ class GeminiService:
         self.log.info("Selected featured gender-aware voices: %s", result)
         return result
 
+    def translate_for_duration(self, segments):
+        lines = []
+        for s in segments:
+            duration = max(0.25, float(s['end']) - float(s['start']))
+            pace = s.get('pace', 'normal')
+            factor = {'very_slow': 0.80, 'slow': 0.90, 'normal': 1.00, 'fast': 1.12, 'very_fast': 1.22}.get(pace, 1.0)
+            target = max(8, round(duration * self.s.translation_chars_per_second * factor))
+            lo = max(4, round(target * 0.82))
+            hi = max(lo + 4, round(target * 1.18))
+            lines.append(f'{s["id"]}|||duration={duration:.2f}s|||chars={lo}-{hi}|||pace={pace}|||{s["text"]}')
+        prompt = (
+            'Translate each dialogue line into natural spoken Hindi for a high-quality movie/anime dub. '
+            'Match the requested duration and character-count band without deleting essential meaning. '
+            'Prefer natural Hindi word choice, not literal translation. Keep names and technical terms consistent. '
+            'Keep interjections and expletives natural. Return exactly one line per input using ID|||Hindi text.\n\n' +
+            '\n'.join(lines)
+        )
+        output, model = self.generate_text(prompt)
+        result = {}
+        for line in output.splitlines():
+            if '|||' in line:
+                key, value = line.split('|||', 1)
+                result[key.strip()] = value.strip()
+        missing = [s['id'] for s in segments if s['id'] not in result]
+        if missing:
+            raise RuntimeError(f'translation missing IDs: {missing[:8]}')
+        self.log.info('Translated %d segments with duration-aware constraints using %s', len(segments), model)
+        return result
+
+    def rewrite_for_observed_duration(self, segment, observed_duration: float):
+        target = max(0.25, float(segment['end']) - float(segment['start']))
+        instruction = ('Shorten the Hindi line' if observed_duration > target else 'Expand the Hindi line slightly')
+        prompt = (
+            f'{instruction} naturally while preserving meaning and emotion. Do not add filler. '
+            f'Target spoken duration is about {target:.2f}s and current TTS duration is {observed_duration:.2f}s. '
+            'Return only the revised Hindi sentence.\n\n' + segment['hindi']
+        )
+        output, _ = self.generate_text(prompt)
+        return output.strip().splitlines()[0].strip()
+
+    @staticmethod
+    def _style(segment):
+        parts = []
+        for key in ('emotion', 'pace', 'intensity', 'style', 'voice_profile'):
+            if segment.get(key):
+                parts.append(f'{key}: {segment[key]}')
+        return '; '.join(parts) or 'natural conversational dubbing performance'
+
+    def tts_segment(self, segment, voice: str, out_path: Path):
+        last = None
+        for model in self.s.tts_models:
+            for key_no, (key, client) in enumerate(self._clients(), 1):
+                try:
+                    style = self._style(segment)
+                    self.log.info('TTS segment=%s model=%s key=#%d voice=%s', segment['id'], model, key_no, voice)
+                    interaction = client.interactions.create(
+                        model=model,
+                        input=[{
+                            'type': 'user_input',
+                            'content': [{
+                                'type': 'text',
+                                'text': segment['hindi'],
+                                'annotations': [{'type': 'speech_metadata', 'style': style}],
+                            }],
+                        }],
+                        response_format={'type': 'audio'},
+                        generation_config={'speech_config': [{'voice': voice}]},
+                    )
+                    data = getattr(getattr(interaction, 'output_audio', None), 'data', None)
+                    if not data:
+                        raise RuntimeError('empty TTS audio response')
+                    raw = base64.b64decode(data) if isinstance(data, str) else bytes(data)
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    if raw[:4] == b'RIFF':
+                        out_path.write_bytes(raw)
+                    else:
+                        with wave.open(str(out_path), 'wb') as wf:
+                            wf.setnchannels(1)
+                            wf.setsampwidth(2)
+                            wf.setframerate(24000)
+                            wf.writeframes(raw)
+                    return model
+                except Exception as exc:
+                    last = exc
+                    self.log.warning('TTS segment=%s model=%s key=#%d failed: %s', segment['id'], model, key_no, str(exc)[:1000])
+        raise RuntimeError(f'TTS failed on all configured models/keys: {last}')
     def _tts_request(self, client, model, segments, voices):
         speaker_ids = list(dict.fromkeys(s["speaker"] for s in segments))
         if len(speaker_ids) > 2:
