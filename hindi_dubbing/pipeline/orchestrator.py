@@ -14,6 +14,7 @@ from hindi_dubbing.core.audio.processor import (
     extract_audio,
     extract_range,
     fit_audio,
+    trim_edge_silence,
     ffprobe_duration,
     probe_wav,
     run_cmd,
@@ -147,34 +148,63 @@ def _make_mix_audio(source_video: Path, out: Path, log):
 
 
 def _generate_segment_audio(gemini, segment, voice, segment_dir, log):
-    target = max(0.20, float(segment['end']) - float(segment['start']))
-    attempts = max(0, int(settings.rewrite_attempts))
+    preferred = max(0.25, float(segment['end']) - float(segment['start']))
+    next_start = float(segment.get('next_start', segment['start'] + preferred))
+    available = max(preferred, next_start - float(segment['start']) - 0.06)
+
+    # Allow the dubbed line to use nearby silence rather than forcing the TTS
+    # to exactly match a very short English word window.
+    natural_cap = min(available, preferred + 1.50)
+    attempts = max(0, min(int(settings.rewrite_attempts), 1))
+
+    best_path = None
+    best_duration = None
     for attempt in range(attempts + 1):
         raw = segment_dir / f'{segment["id"]}_attempt{attempt}.wav'
         gemini.tts_segment(segment, voice, raw)
-        observed = probe_wav(raw)[3]
-        ratio = observed / target if target else 1.0
+
+        trimmed = segment_dir / f'{segment["id"]}_attempt{attempt}_trim.wav'
+        trim_edge_silence(raw, trimmed, log)
+        observed = probe_wav(trimmed)[3]
+        ratio = observed / natural_cap if natural_cap else 1.0
+
         log.info(
-            'Dialogue %s target=%.3fs generated=%.3fs ratio=%.3f attempt=%d',
-            segment['id'], target, observed, ratio, attempt,
+            'Dialogue %s preferred=%.3fs natural_cap=%.3fs available=%.3fs '
+            'generated=%.3fs ratio_to_cap=%.3f attempt=%d',
+            segment['id'], preferred, natural_cap, available, observed, ratio, attempt,
         )
-        if settings.target_tts_min_ratio <= ratio <= settings.target_tts_max_ratio:
+
+        if best_duration is None or abs(observed - preferred) < abs(best_duration - preferred):
+            best_path = trimmed
+            best_duration = observed
+
+        if observed <= natural_cap:
             segment['tts_duration'] = observed
-            return raw
+            segment['dub_end'] = float(segment['start']) + observed
+            segment['tts_time_stretch'] = 1.0
+            return trimmed
+
         if attempt < attempts:
-            segment['hindi'] = gemini.rewrite_for_observed_duration(segment, observed)
+            segment['hindi'] = gemini.rewrite_for_observed_duration(
+                segment,
+                observed,
+                target_duration=natural_cap,
+            )
 
-    # Final correction is deliberately small. Large time-stretching is avoided until
-    # all linguistic duration-aware attempts have failed.
-    final_ratio = observed / target if target else 1.0
-    if 0.75 <= final_ratio <= 1.30:
-        fit = segment_dir / f'{segment["id"]}.wav'
-        fit_audio(raw, fit, target, log)
-        segment['tts_duration'] = probe_wav(fit)[3]
-        segment['tts_time_stretch'] = final_ratio
-        return fit
-    raise RuntimeError(f'Could not produce natural-duration TTS for {segment["id"]}: {observed:.2f}s vs {target:.2f}s')
-
+    # Never abort the whole movie because one very short line does not fit
+    # perfectly. Prefer a mild speed adjustment over an extreme stretch.
+    fit = segment_dir / f'{segment["id"]}.wav'
+    fit_audio(best_path, fit, natural_cap, log)
+    fitted = probe_wav(fit)[3]
+    segment['tts_duration'] = fitted
+    segment['dub_end'] = float(segment['start']) + fitted
+    segment['tts_time_stretch'] = best_duration / natural_cap if natural_cap else 1.0
+    if best_duration > natural_cap:
+        log.warning(
+            'Dialogue %s required mild timing correction: %.3fs -> %.3fs',
+            segment['id'], best_duration, natural_cap,
+        )
+    return fit
 
 def run_pipeline(source_video: Path, output_video: Path, progress: Progress | None = None, job_id: str | None = None) -> Path:
     settings.validate()
@@ -275,6 +305,9 @@ def run_pipeline(source_video: Path, output_video: Path, progress: Progress | No
                 segment['hindi'] = translated[segment['id']]
 
         audio_items = []
+        ordered_segments = sorted(segments, key=lambda x: float(x['start']))
+        for i, segment in enumerate(ordered_segments):
+            segment['next_start'] = float(ordered_segments[i + 1]['start']) if i + 1 < len(ordered_segments) else duration
         report('tts', 'Synthesizing each dialogue line with locked character voice and acting style')
         for idx, segment in enumerate(segments, 1):
             report('tts', f'Dialogue {idx}/{len(segments)}')
@@ -286,7 +319,7 @@ def run_pipeline(source_video: Path, output_video: Path, progress: Progress | No
                 log,
             )
             segment['audio_path'] = str(audio_path)
-            audio_items.append((segment['start'], segment['end'], audio_path))
+            audio_items.append((segment['start'], segment['dub_end'], audio_path))
 
         report('mix', 'Building Hindi dialogue timeline')
         dialogue_track = audio_dir / 'hindi_dialogue.wav'
