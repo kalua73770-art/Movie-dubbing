@@ -94,3 +94,16 @@ def assemble_track(items, total_duration: float, out: Path):
             frames=int((total_duration-cursor)*sr)
             while frames:
                 n=min(frames,sr); wf.writeframes(silence_block[:n*sw]); frames-=n
+
+
+def trim_edge_silence(src: Path, dst: Path, log=None):
+    """Remove only leading/trailing silence from generated TTS; keep internal pauses."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    run_cmd([
+        "ffmpeg", "-y", "-i", src,
+        "-af",
+        "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-45dB:"
+        "stop_periods=1:stop_duration=0.08:stop_threshold=-45dB",
+        "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", dst
+    ], log)
+    return dst
