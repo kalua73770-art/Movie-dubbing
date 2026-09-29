@@ -391,13 +391,13 @@ class GeminiService:
         self.log.info('Translated %d segments with duration-aware constraints using %s', len(segments), model)
         return result
 
-    def rewrite_for_observed_duration(self, segment, observed_duration: float):
-        target = max(0.25, float(segment['end']) - float(segment['start']))
-        instruction = ('Shorten the Hindi line' if observed_duration > target else 'Expand the Hindi line slightly')
+    def rewrite_for_observed_duration(self, segment, observed_duration: float, target_duration: float | None = None):
+        target = max(0.25, float(target_duration or (float(segment['end']) - float(segment['start']))))
+        instruction = 'Shorten the Hindi line'
         prompt = (
-            f'{instruction} naturally while preserving meaning and emotion. Do not add filler. '
+            f'{instruction} naturally while preserving meaning and emotion. Do not add filler or explanations. '
             f'Target spoken duration is about {target:.2f}s and current TTS duration is {observed_duration:.2f}s. '
-            'Return only the revised Hindi sentence.\n\n' + segment['hindi']
+            'Use fewer, shorter spoken words; keep the same intent. Return only the revised Hindi sentence.\n\n' + segment['hindi']
         )
         output, _ = self.generate_text(prompt)
         return output.strip().splitlines()[0].strip()
