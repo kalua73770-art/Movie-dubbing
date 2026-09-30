@@ -23,7 +23,7 @@ jobs:
           cache: "pip"
 
       - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg espeak-ng
 
       - name: Install package
         run: python -m pip install --upgrade pip && python -m pip install -e .
