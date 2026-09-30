@@ -173,25 +173,44 @@ class GeminiService:
         for model in self.s.text_models:
             try:
                 self.log.info("Text model=%s", model)
-                response, key_index = self._attempt(
+
+                def action(client, _, __):
+                    response = client.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config={
+                            "http_options": {
+                                "timeout": int(self.s.text_timeout_ms)
+                            }
+                        },
+                    )
+                    text = getattr(response, "text", None)
+                    if not text:
+                        raise RuntimeError("empty text response")
+                    return text
+
+                text, key_index = self._attempt(
                     task="text",
                     model=model,
                     preferred_key_index=preferred_key_index,
-                    action=lambda client, _, __: client.models.generate_content(
-                        model=model,
-                        contents=prompt,
-                        config={"http_options": {"timeout": int(self.s.text_timeout_ms)}},
-                    ),
+                    action=action,
                 )
-                text = getattr(response, "text", None)
-                if text:
-                    self.log.info("Text success model=%s key=#%d", model, key_index + 1)
-                    return text, model
-                raise RuntimeError("empty text response")
+                self.log.info(
+                    "Text success model=%s key=#%d",
+                    model,
+                    key_index + 1,
+                )
+                return text, model
             except Exception as exc:
                 last = exc
-                self.log.warning("Trying next configured text model after %s: %s", model, str(exc)[:700])
-        raise RuntimeError(f"text generation failed on all configured models/keys: {last}")
+                self.log.warning(
+                    "Trying next configured text model after %s: %s",
+                    model,
+                    str(exc)[:700],
+                )
+        raise RuntimeError(
+            f"text generation failed on all configured models/keys: {last}"
+        )
 
     @staticmethod
     def _offset(value) -> float:
