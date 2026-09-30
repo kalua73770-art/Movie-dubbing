@@ -30,12 +30,20 @@ jobs:
     env:
       GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
       GEMINI_TRANSCRIBE_MODEL: gemini-3.5-transcribe
-      GEMINI_TEXT_MODELS: gemini-3.5-flash-lite,gemini-2.5-flash-lite
+      GEMINI_TEXT_MODELS: gemini-3.5-flash-lite,gemini-3.1-flash-lite
       GEMINI_TTS_MODELS: gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts
-      GEMINI_VIDEO_MODELS: gemini-3.5-flash-lite,gemini-3.8-flash,gemini-2.5-flash
+      GEMINI_VIDEO_MODELS: gemini-3.8-flash,gemini-3.5-flash-lite
       AUDIO_STEM_PROVIDER: tiger_hf
-      GEMINI_HTTP_TIMEOUT_MS: "120000"
-      VIDEO_MAX_KEYS_PER_MODEL: "2"
+      GEMINI_HTTP_TIMEOUT_MS: "600000"
+      GEMINI_TEXT_TIMEOUT_MS: "120000"
+      GEMINI_TRANSCRIBE_TIMEOUT_MS: "600000"
+      GEMINI_TTS_TIMEOUT_MS: "180000"
+      GEMINI_VIDEO_TIMEOUT_MS: "600000"
+      TRANSCRIBE_CHUNK_SECONDS: "900"
+      TRANSCRIBE_OVERLAP_SECONDS: "8"
+      TRANSCRIBE_WORKERS: "2"
+      VIDEO_ANALYSIS_MAX_WINDOWS: "6"
+      VIDEO_MAX_KEYS_PER_MODEL: "1"
       PYTHONUNBUFFERED: "1"
 
     steps:
