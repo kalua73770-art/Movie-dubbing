@@ -96,8 +96,7 @@ class VideoAnalyzer:
         transcript_segments,
         registry,
     ):
-        transcript = "
-".join(
+        transcript = "\n".join(
             f'{s["id"]} | {s["start"]:.2f}-{s["end"]:.2f}s | '
             f'{s["speaker"]} | {s["text"]}'
             for s in transcript_segments
