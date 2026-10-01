@@ -327,9 +327,34 @@ def run_pipeline(
         )
         gemini = GeminiService(settings, log)
 
+        report("model_check", "Checking configured Gemini model endpoints before expensive work")
+        health = gemini.probe_models({
+            "text": settings.text_models,
+            "video": settings.video_models,
+            "tts": settings.tts_models,
+            "transcribe": [settings.transcribe_model],
+        })
+
+        if health.get("text"):
+            settings.text_models[:] = health["text"]
+        if health.get("video"):
+            settings.video_models[:] = health["video"]
+        if health.get("tts"):
+            settings.tts_models[:] = health["tts"]
+
+        # Transcribe has a dedicated model; runtime key rotation remains enabled.
+        if not health.get("transcribe"):
+            raise RuntimeError("Gemini Transcribe model is not available to any configured API key")
+
+        if not settings.text_models:
+            raise RuntimeError("No preflight-ready Gemini text model is available")
+        if not settings.tts_models:
+            raise RuntimeError("No preflight-ready Gemini TTS model is available")
+
         state["models"]["transcribe"] = settings.transcribe_model
         state["models"]["video"] = settings.video_models
         state["models"]["tts"] = settings.tts_models
+        state["models"]["preflight"] = health
 
         # Transcription chunks are independent. When multiple API keys are
         # configured, use bounded parallelism and pin initial chunks to different
