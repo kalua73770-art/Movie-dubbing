@@ -72,28 +72,88 @@ def extract_range(src: Path, dst: Path, start: float, end: float, log=None):
     dst.parent.mkdir(parents=True,exist_ok=True)
     run_cmd(["ffmpeg","-y","-ss",f"{start:.4f}","-t",f"{max(0,end-start):.4f}","-i",src,"-ac","1","-ar","24000","-c:a","pcm_s16le",dst],log)
 
-def assemble_track(items, total_duration: float, out: Path):
-    out.parent.mkdir(parents=True,exist_ok=True)
-    sr=24000; sw=2
-    with wave.open(str(out),"wb") as wf:
-        wf.setnchannels(1); wf.setsampwidth(sw); wf.setframerate(sr)
-        cursor=0.0
-        silence_block=b"\0"* (sr*sw)
-        for start,end,path in sorted(items,key=lambda x:x[0]):
-            if start>cursor:
-                frames=int((start-cursor)*sr)
-                while frames:
-                    n=min(frames,sr); wf.writeframes(silence_block[:n*sw]); frames-=n
-            with wave.open(str(path),"rb") as src:
-                data=src.readframes(src.getnframes())
-            overlap=max(0.0,cursor-start)
-            if overlap:
-                cut=int(overlap*sr)*sw; data=data[cut:]
-            wf.writeframes(data); cursor=max(cursor,end)
-        if cursor<total_duration:
-            frames=int((total_duration-cursor)*sr)
-            while frames:
-                n=min(frames,sr); wf.writeframes(silence_block[:n*sw]); frames-=n
+def assemble_track(items, total_duration: float, out: Path, chunk_seconds: float = 30.0, log=None):
+    """
+    Build the dialogue timeline with real sample mixing.
+
+    The previous implementation truncated a new line whenever it overlapped the
+    previous line. That could silently delete dialogue. This version mixes
+    overlapping lines instead of cutting them away.
+    """
+    import numpy as np
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    sr = 24000
+    sw = 2
+    normalized = []
+
+    for start, end, path in sorted(items, key=lambda x: float(x[0])):
+        if end <= start:
+            continue
+        with wave.open(str(path), "rb") as src:
+            src_sr = src.getframerate()
+            channels = src.getnchannels()
+            raw = src.readframes(src.getnframes())
+        if channels != 1:
+            data = np.frombuffer(raw, dtype=np.int16).reshape(-1, channels).astype(np.float32)
+            data = np.mean(data, axis=1)
+        else:
+            data = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+        if src_sr != sr:
+            converted = out.parent / f".resample_{Path(path).stem}_{sr}.wav"
+            run_cmd([
+                "ffmpeg", "-y", "-i", path,
+                "-ac", "1", "-ar", str(sr), "-c:a", "pcm_s16le", converted
+            ], log)
+            with wave.open(str(converted), "rb") as src2:
+                data = np.frombuffer(src2.readframes(src2.getnframes()), dtype=np.int16).astype(np.float32)
+            try:
+                converted.unlink()
+            except Exception:
+                pass
+        data /= 32768.0
+        normalized.append((float(start), float(end), data))
+
+    with wave.open(str(out), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(sw)
+        wf.setframerate(sr)
+
+        chunk_frames = max(1, int(round(chunk_seconds * sr)))
+        total_frames = max(1, int(round(total_duration * sr)))
+
+        for chunk_start in range(0, total_frames, chunk_frames):
+            chunk_end = min(total_frames, chunk_start + chunk_frames)
+            buf = np.zeros(chunk_end - chunk_start, dtype=np.float32)
+
+            for item_start, item_end, data in normalized:
+                if item_end <= chunk_start / sr or item_start >= chunk_end / sr:
+                    continue
+
+                src_start = max(0, int(round((chunk_start / sr - item_start) * sr)))
+                dst_start = max(0, int(round((item_start - chunk_start / sr) * sr)))
+                available = min(
+                    len(data) - src_start,
+                    len(buf) - dst_start,
+                )
+                if available <= 0:
+                    continue
+
+                block = data[src_start:src_start + available].copy()
+
+                # Tiny edge fades prevent clicks when individual TTS files are placed.
+                fade = min(int(sr * 0.018), available // 2)
+                if fade > 0:
+                    block[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)
+                    block[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+
+                buf[dst_start:dst_start + available] += block
+
+            peak = float(np.max(np.abs(buf))) if len(buf) else 0.0
+            if peak > 0.97:
+                buf *= 0.97 / peak
+
+            wf.writeframes((np.clip(buf, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes())
 
 
 def trim_edge_silence(src: Path, dst: Path, log=None):
