@@ -182,7 +182,7 @@ class GeminiService:
             for model in models:
                 ok = False
                 last_error = None
-                for key_index, key in enumerate(self.s.api_keys):
+                for key_index, key in enumerate(self.s.api_keys[:2]):
                     try:
                         client = self._client(key)
                         info = client.models.get(model=model)
