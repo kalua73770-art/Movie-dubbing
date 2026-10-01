@@ -7,7 +7,7 @@ concurrency:
 on:
   push:
     paths:
-      - "test/input.mp4"
+      - "test/Input.mp4"
       - "hindi_dubbing/**"
       - "pyproject.toml"
       - ".github/workflows/test-dubbing.yml"
@@ -16,7 +16,7 @@ on:
       video_path:
         description: "Path of the uploaded test video in the repository"
         required: true
-        default: "test/input.mp4"
+        default: "test/Input.mp4"
         type: string
 
 jobs:
@@ -54,7 +54,7 @@ jobs:
       - name: Check test video
         run: |
           set -e
-          VIDEO_PATH="${{ inputs.video_path || 'test/input.mp4' }}"
+          VIDEO_PATH="${{ inputs.video_path || 'test/Input.mp4' }}"
           echo "Using video: $VIDEO_PATH"
           test -f "$VIDEO_PATH" || {
             echo "::error::Video not found at $VIDEO_PATH"
@@ -88,7 +88,7 @@ jobs:
       - name: Run movie dubbing
         run: |
           mkdir -p test-output
-          VIDEO_PATH="${{ inputs.video_path || 'test/input.mp4' }}"
+          VIDEO_PATH="${{ inputs.video_path || 'test/Input.mp4' }}"
           python -m hindi_dubbing.cli.main "$VIDEO_PATH" "test-output/dubbed_hindi_latest.mp4"
 
       - name: Show output
