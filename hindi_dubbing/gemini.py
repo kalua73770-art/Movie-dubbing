@@ -38,6 +38,7 @@ class GeminiService:
                     api_key=key,
                     http_options=types.HttpOptions(
                         timeout=int(self.s.gemini_http_timeout_ms),
+                        retry_options=types.HttpRetryOptions(attempts=1),
                     ),
                 )
                 self._clients[key] = client
@@ -167,6 +168,44 @@ class GeminiService:
         raise RuntimeError(
             f"{task} failed for model={model} on all configured API keys: {last}"
         )
+
+    def probe_models(self, task_models: dict[str, list[str]]) -> dict[str, list[str]]:
+        """
+        Cheap capability/endpoint preflight using models.get().
+        This confirms that the configured model is exposed to at least one API key.
+        It does not pretend to predict transient backend capacity; 429/503 is still
+        handled by the runtime circuit breaker.
+        """
+        health = {}
+        for task, models in task_models.items():
+            healthy = []
+            for model in models:
+                ok = False
+                last_error = None
+                for key_index, key in enumerate(self.s.api_keys):
+                    try:
+                        client = self._client(key)
+                        info = client.models.get(model=model)
+                        display = getattr(info, "display_name", None) or getattr(info, "name", None) or model
+                        self.log.info(
+                            "Model preflight OK task=%s model=%s key=#%d (%s)",
+                            task, model, key_index + 1, display,
+                        )
+                        ok = True
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                if ok:
+                    healthy.append(model)
+                else:
+                    self.log.warning(
+                        "Model preflight unavailable task=%s model=%s: %s",
+                        task, model, str(last_error)[:700],
+                    )
+            health[task] = healthy
+            if not healthy:
+                self.log.warning("No preflight-ready models for task=%s", task)
+        return health
 
     def generate_text(self, prompt, preferred_key_index: int | None = None):
         last: Exception | None = None
