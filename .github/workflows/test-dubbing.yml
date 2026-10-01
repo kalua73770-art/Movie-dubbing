@@ -31,8 +31,8 @@ jobs:
       GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
       GEMINI_TRANSCRIBE_MODEL: gemini-3.5-transcribe
       GEMINI_TEXT_MODELS: gemini-3.5-flash-lite,gemini-3.1-flash-lite
-      GEMINI_TTS_MODELS: gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts
-      GEMINI_VIDEO_MODELS: gemini-3.8-flash,gemini-3.5-flash-lite
+      GEMINI_TTS_MODELS: gemini-3.8-flash-lite-tts,gemini-3.8-flash-tts
+      GEMINI_VIDEO_MODELS: gemini-3.6-flash,gemini-3.5-flash-lite
       AUDIO_STEM_PROVIDER: reconstruct
       GEMINI_HTTP_TIMEOUT_MS: "600000"
       GEMINI_TEXT_TIMEOUT_MS: "120000"
