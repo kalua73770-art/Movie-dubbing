@@ -484,6 +484,8 @@ class GeminiService:
         return {"character_gender": "ambiguous", "confidence": 0.0, "model": None}
 
     def choose_voices(self, speaker_profiles: dict[str, dict]) -> dict[str, str]:
+        # Use a broad pool so distinct main characters do not collapse onto the
+        # same prebuilt voice merely because the first few configured voices filled up.
         featured = {
             "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
             "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba",
@@ -491,66 +493,83 @@ class GeminiService:
             "Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird",
             "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
         }
-
         catalog = {}
-        # Voice discovery is a convenience call; do not burn every key for it.
-        for key_index, key in enumerate(self.s.api_keys):
-            try:
-                client = self._client(key)
-                response = client.voices.list(type_=["prebuilt"], page_size=1000)
-                for voice in response.voices or []:
-                    voice_id = getattr(voice, "id", None)
-                    if voice_id in featured:
-                        catalog[str(voice_id)] = str(
-                            getattr(voice, "gender", None) or "neutral"
-                        ).lower()
-                if catalog:
-                    break
-            except Exception as exc:
-                self.log.warning(
-                    "Featured voice catalog lookup key=#%d failed: %s",
-                    key_index + 1, str(exc)[:500],
-                )
+        try:
+            # One lightweight discovery call is enough; runtime TTS has its own
+            # key/model router.
+            key = self.s.api_keys[0]
+            client = self._client(key)
+            response = client.voices.list(type_=["prebuilt"], page_size=1000)
+            for voice_obj in response.voices or []:
+                voice_id = getattr(voice_obj, "id", None)
+                if voice_id in featured:
+                    catalog[str(voice_id)] = str(
+                        getattr(voice_obj, "gender", None) or "neutral"
+                    ).lower()
+        except Exception as exc:
+            self.log.warning("Voice catalog discovery failed: %s", str(exc)[:600])
 
-        available = [v for v in self.s.voices if v in featured]
-        if not available:
-            available = ["Kore", "Puck", "Charon", "Zephyr", "Fenrir", "Leda", "Orus", "Aoede"]
+        configured = [v for v in self.s.voices if v in featured]
+        if not configured:
+            configured = ["Kore", "Puck", "Charon", "Fenrir", "Orus", "Leda", "Zephyr", "Aoede"]
 
         fallback_gender = {
-            "Kore": "female", "Aoede": "female", "Leda": "female", "Zephyr": "female",
-            "Achernar": "female", "Callirrhoe": "female", "Despina": "female",
-            "Erinome": "female", "Laomedeia": "female", "Autonoe": "female",
+            "Kore": "female", "Leda": "female", "Aoede": "female", "Zephyr": "female",
+            "Callirrhoe": "female", "Autonoe": "female", "Despina": "female",
+            "Erinome": "female", "Laomedeia": "female", "Achernar": "female",
             "Puck": "male", "Charon": "male", "Fenrir": "male", "Orus": "male",
             "Iapetus": "male", "Algieba": "male", "Algenib": "male",
             "Rasalgethi": "male", "Alnilam": "male", "Gacrux": "male",
             "Sadaltager": "male", "Sulafat": "male",
         }
-        for voice in available:
-            catalog.setdefault(voice, fallback_gender.get(voice, "neutral"))
+        for voice_id in configured:
+            catalog.setdefault(voice_id, fallback_gender.get(voice_id, "neutral"))
 
-        pools = {}
-        for gender in ("male", "female", "neutral"):
-            pool = [v for v in available if catalog.get(v) == gender]
-            pools[gender] = pool or available
+        pools = {
+            gender: [
+                v for v in configured
+                if catalog.get(v, "neutral") == gender
+            ]
+            for gender in ("male", "female", "neutral")
+        }
+        for gender in pools:
+            if not pools[gender]:
+                pools[gender] = [v for v in configured if v not in pools.get("male" if gender != "male" else "female", [])]
+                if not pools[gender]:
+                    pools[gender] = configured[:]
 
-        counters = {"male": 0, "female": 0, "neutral": 0}
-        used = set()
         result = {}
+        used = set()
+        # Main/declared characters first: more important characters get unique voices.
+        ordered = sorted(
+            speaker_profiles.items(),
+            key=lambda kv: (
+                -float(kv[1].get("priority", 0) or 0),
+                kv[0],
+            ),
+        )
+        counters = {"male": 0, "female": 0, "neutral": 0}
 
-        for speaker in sorted(speaker_profiles):
-            gender = speaker_profiles[speaker].get("character_gender", "ambiguous")
-            pool_gender = gender if gender in {"male", "female", "neutral"} else "neutral"
-            pool = pools[pool_gender]
-            candidate = None
-            for _ in range(len(pool)):
-                candidate = pool[counters[pool_gender] % len(pool)]
-                counters[pool_gender] += 1
-                if candidate not in used or len(pool) == 1:
-                    break
-            result[speaker] = candidate
-            used.add(candidate)
+        for character_id, profile in ordered:
+            gender = str(profile.get("gender", "ambiguous")).lower()
+            gender = gender if gender in {"male", "female", "neutral"} else "neutral"
+            pool = pools[gender]
+            preferred_voice = profile.get("preferred_voice")
+            if preferred_voice in pool and preferred_voice not in used:
+                chosen = preferred_voice
+            else:
+                chosen = None
+                for voice_id in pool:
+                    if voice_id not in used:
+                        chosen = voice_id
+                        break
+                if chosen is None:
+                    chosen = pool[counters[gender] % len(pool)]
+                    counters[gender] += 1
+            result[character_id] = chosen
+            used.add(chosen)
 
-        self.log.info("Selected featured gender-aware voices: %s", result)
+        self.log.info("Character voice lock: %s", result)
         return result
 
     def translate_for_duration(self, segments):
@@ -600,11 +619,21 @@ class GeminiService:
             0.25,
             float(target_duration or (float(segment["end"]) - float(segment["start"]))),
         )
+        if observed_duration > target:
+            direction = (
+                "Shorten the Hindi line naturally while preserving meaning and emotion. "
+                "Do not remove essential meaning. Use fewer, shorter spoken words."
+            )
+        else:
+            direction = (
+                "Expand the Hindi line naturally while preserving meaning and emotion. "
+                "Do not add unrelated filler. Use natural Hindi phrasing, connective words, "
+                "or a brief natural reaction so the spoken line has enough duration."
+            )
         prompt = (
-            "Shorten the Hindi line naturally while preserving meaning and emotion. "
-            "Do not add filler or explanations. "
+            f"{direction} "
             f"Target spoken duration is about {target:.2f}s and current TTS duration is {observed_duration:.2f}s. "
-            "Use fewer, shorter spoken words; keep the same intent. Return only the revised Hindi sentence.\n\n"
+            "Return only the revised Hindi sentence.\n\n"
             + segment["hindi"]
         )
         output, _ = self.generate_text(prompt)
