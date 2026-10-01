@@ -577,21 +577,27 @@ class GeminiService:
         for s in segments:
             duration = max(0.25, float(s["end"]) - float(s["start"]))
             pace = s.get("pace", "normal")
-            factor = {
-                "very_slow": 0.80, "slow": 0.90, "normal": 1.00,
-                "fast": 1.12, "very_fast": 1.22,
-            }.get(pace, 1.0)
-            target = max(8, round(duration * self.s.translation_chars_per_second * factor))
-            lo = max(4, round(target * 0.82))
-            hi = max(lo + 4, round(target * 1.18))
+            rate = {
+                "very_slow": 1.65,
+                "slow": 1.95,
+                "normal": 2.25,
+                "fast": 2.55,
+                "very_fast": 2.85,
+            }.get(pace, 2.25)
+            target_words = max(1, round(duration * rate))
+            min_words = max(1, round(target_words * 0.82))
+            max_words = max(min_words + 2, round(target_words * 1.18))
             lines.append(
-                f'{s["id"]}|||duration={duration:.2f}s|||chars={lo}-{hi}|||pace={pace}|||{s["text"]}'
+                f'{s["id"]}|||duration={duration:.2f}s|||words={min_words}-{max_words}|||pace={pace}|||source={s["text"]}'
             )
         prompt = (
-            "Translate each dialogue line into natural spoken Hindi for a high-quality movie/anime dub. "
-            "Match the requested duration and character-count band without deleting essential meaning. "
-            "Prefer natural Hindi word choice, not literal translation. Keep names and technical terms consistent. "
-            "Keep interjections and expletives natural. Return exactly one line per input using ID|||Hindi text.\n\n"
+            "Rewrite each source dialogue into natural spoken Hindi for a professional movie/anime dub. "
+            "Preserve ALL meaning, intent, names, relationships, reactions and important details. "
+            "Do not omit half of a sentence just to make it short. "
+            "Aim for the requested spoken duration and word-count band. "
+            "For longer lines, use natural Hindi phrasing, connectives or a brief natural reaction when "
+            "needed, but never add unrelated information. For short lines, stay concise. "
+            "Return exactly one line per input using ID|||Hindi text.\n\n"
             + "\n".join(lines)
         )
         output, model = self.generate_text(prompt)
@@ -604,10 +610,11 @@ class GeminiService:
         if missing:
             raise RuntimeError(f"translation missing IDs: {missing[:8]}")
         self.log.info(
-            "Translated %d segments with duration-aware constraints using %s",
+            "Translated %d segments with duration-aware word targets using %s",
             len(segments), model,
         )
         return result
+
 
     def rewrite_for_observed_duration(
         self,
