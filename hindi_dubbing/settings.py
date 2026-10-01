@@ -47,7 +47,7 @@ class Settings:
 
     # Video analysis is the most failure-prone/slowest optional stage.
     video_analysis_window_seconds: int = int(
-        os.getenv("VIDEO_ANALYSIS_WINDOW_SECONDS", "600")
+        os.getenv("VIDEO_ANALYSIS_WINDOW_SECONDS", "180")
     )
     video_analysis_max_windows: int = int(
         os.getenv("VIDEO_ANALYSIS_MAX_WINDOWS", "6")
