@@ -44,9 +44,6 @@ def _detect_scene_cuts(video: Path, log=None, threshold: float = 0.35):
     ]
     if log:
         log.info("$ %s", " ".join(map(str, cmd)))
-    result = run_cmd(cmd, log=None)
-    # showinfo writes to stderr; run_cmd captures stderr only when it fails, so use a
-    # direct call here to retain showinfo output without treating it as an error.
     import subprocess
 
     proc = subprocess.run(
