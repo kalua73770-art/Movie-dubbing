@@ -37,10 +37,10 @@ def mix_final(video: Path, dialogue: Path, background: Path | None, out: Path, s
             "-i", dialogue,
             "-filter_complex",
             "[1:a:0]aresample=48000,aformat=sample_fmts=fltp,pan=stereo|c0=c0|c1=c0,volume=0.78[bg];"
-            "[2:a:0]aresample=48000,aformat=sample_fmts=fltp,pan=stereo|c0=c0|c1=c0[dlg];"
-            "[bg][dlg]sidechaincompress=threshold=0.05:ratio=2:attack=10:release=120:"
+            "[2:a:0]aresample=48000,aformat=sample_fmts=fltp,pan=stereo|c0=c0|c1=c0,asplit=2[dlg_sc][dlg_mix];"
+            "[bg][dlg_sc]sidechaincompress=threshold=0.05:ratio=2:attack=10:release=120:"
             "makeup=1:knee=1:detection=peak:level_sc=2:mix=1[duck];"
-            "[duck][dlg]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]",
+            "[duck][dlg_mix]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]",
             "-map", "0:v:0",
             "-map", "[a]",
             "-c:v", "copy",
