@@ -201,11 +201,14 @@ def _generate_segment_audio(gemini, segment, voice, segment_dir, log):
         next_start - float(segment["start"]) - 0.06,
     )
 
-    natural_cap = min(available, preferred + 1.50)
+    natural_min = max(0.30, preferred * 0.82)
+    natural_cap = min(available, max(preferred * 1.18, preferred + 1.0))
     attempts = max(0, min(int(settings.rewrite_attempts), 1))
 
     best_path = None
-    best_duration = None
+    best_distance = float("inf")
+    best_duration = 0.0
+
     for attempt in range(attempts + 1):
         raw = segment_dir / f'{segment["id"]}_attempt{attempt}.wav'
         gemini.tts_segment(segment, voice, raw)
@@ -213,57 +216,75 @@ def _generate_segment_audio(gemini, segment, voice, segment_dir, log):
         trimmed = segment_dir / f'{segment["id"]}_attempt{attempt}_trim.wav'
         trim_edge_silence(raw, trimmed, log)
         observed = probe_wav(trimmed)[3]
-        ratio = observed / natural_cap if natural_cap else 1.0
+
+        if natural_min <= observed <= natural_cap:
+            segment["tts_duration"] = observed
+            segment["dub_end"] = min(
+                float(segment["start"]) + observed,
+                next_start - 0.02,
+            )
+            segment["tts_time_stretch"] = 1.0
+            return trimmed
+
+        distance = 0.0
+        if observed < natural_min:
+            distance = natural_min - observed
+        elif observed > natural_cap:
+            distance = observed - natural_cap
+
+        if distance < best_distance:
+            best_path = trimmed
+            best_distance = distance
+            best_duration = observed
 
         log.info(
-            "Dialogue %s preferred=%.3fs natural_cap=%.3fs "
-            "available=%.3fs generated=%.3fs ratio_to_cap=%.3f attempt=%d",
+            "Dialogue %s preferred=%.3fs min=%.3fs cap=%.3fs "
+            "available=%.3fs generated=%.3fs attempt=%d",
             segment["id"],
             preferred,
+            natural_min,
             natural_cap,
             available,
             observed,
-            ratio,
             attempt,
         )
-
-        if (
-            best_duration is None
-            or abs(observed - preferred) < abs(best_duration - preferred)
-        ):
-            best_path = trimmed
-            best_duration = observed
-
-        if observed <= natural_cap:
-            segment["tts_duration"] = observed
-            segment["dub_end"] = float(segment["start"]) + observed
-            segment["tts_time_stretch"] = 1.0
-            return trimmed
 
         if attempt < attempts:
             segment["hindi"] = gemini.rewrite_for_observed_duration(
                 segment,
                 observed,
-                target_duration=natural_cap,
+                target_duration=(
+                    natural_min if observed < natural_min else natural_cap
+                ),
             )
 
+    # Last resort: only mild timing correction. The linguistic rewrite above has
+    # already tried to pull the line into a natural range.
+    target = natural_min if best_duration < natural_min else natural_cap
     fit = segment_dir / f'{segment["id"]}.wav'
-    fit_audio(best_path, fit, natural_cap, log)
-    fitted = probe_wav(fit)[3]
-    segment["tts_duration"] = fitted
-    segment["dub_end"] = float(segment["start"]) + fitted
-    segment["tts_time_stretch"] = (
-        best_duration / natural_cap if natural_cap else 1.0
-    )
-    if best_duration > natural_cap:
+    ratio = best_duration / target if target else 1.0
+
+    if 0.60 <= ratio <= 1.60:
+        fit_audio(best_path, fit, target, log)
+        fitted = probe_wav(fit)[3]
+        segment["tts_duration"] = fitted
+        segment["dub_end"] = min(
+            float(segment["start"]) + fitted,
+            next_start - 0.02,
+        )
+        segment["tts_time_stretch"] = ratio
         log.warning(
             "Dialogue %s required mild timing correction: %.3fs -> %.3fs",
             segment["id"],
             best_duration,
-            natural_cap,
+            target,
         )
-    return fit
+        return fit
 
+    raise RuntimeError(
+        f"Could not produce usable TTS for {segment['id']}: "
+        f"{best_duration:.2f}s target={target:.2f}s"
+    )
 
 def run_pipeline(
     source_video: Path,
