@@ -90,19 +90,20 @@ class Settings:
     )
 
     target_tts_min_ratio: float = float(
-        os.getenv("TARGET_TTS_MIN_RATIO", "0.88")
+        os.getenv("TARGET_TTS_MIN_RATIO", "0.60")
     )
     target_tts_max_ratio: float = float(
-        os.getenv("TARGET_TTS_MAX_RATIO", "1.12")
+        os.getenv("TARGET_TTS_MAX_RATIO", "1.40")
     )
     rewrite_attempts: int = int(os.getenv("TTS_REWRITE_ATTEMPTS", "1"))
+    background_scene_threshold: float = float(os.getenv("BACKGROUND_SCENE_THRESHOLD", "0.35"))
 
     speaker_analysis_model: str = os.getenv(
         "GEMINI_SPEAKER_MODEL",
         "gemini-3.5-flash-lite",
     )
 
-    audio_stem_provider: str = os.getenv("AUDIO_STEM_PROVIDER", "tiger_hf")
+    audio_stem_provider: str = os.getenv("AUDIO_STEM_PROVIDER", "reconstruct")
     audio_separation_chunk_seconds: int = int(
         os.getenv("AUDIO_SEPARATION_CHUNK_SECONDS", "600")
     )
