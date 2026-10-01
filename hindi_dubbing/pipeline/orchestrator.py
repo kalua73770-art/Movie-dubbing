@@ -479,6 +479,23 @@ def run_pipeline(
         for cid, fallback in fallback_registry.items():
             registry.setdefault(cid, fallback)
 
+        # Rank characters by actual screen/dialogue presence so main characters
+        # receive distinct voices before minor/background speakers.
+        stats = {}
+        for segment in segments:
+            cid = segment["character_id"]
+            stats.setdefault(cid, {"count": 0, "duration": 0.0})
+            stats[cid]["count"] += 1
+            stats[cid]["duration"] += max(
+                0.0,
+                float(segment["end"]) - float(segment["start"]),
+            )
+        for cid, profile in registry.items():
+            score = stats.get(cid, {"count": 0, "duration": 0.0})
+            profile["priority"] = (
+                score["count"] * 2.0 + score["duration"]
+            )
+
         voice_map = gemini.choose_voices(registry)
         for segment in segments:
             segment["voice"] = voice_map[segment["character_id"]]
