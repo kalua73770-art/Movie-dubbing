@@ -110,6 +110,33 @@ def _merge_video_annotations(segments, annotations, registry):
         for a in annotations
         if a.get("segment_id")
     }
+
+    # Build a speaker -> character map from the segment annotations returned by
+    # video understanding. This prevents the same person from becoming multiple
+    # fallback characters whenever a particular frame is hard to attribute.
+    speaker_votes = {}
+    segment_lookup = {s["id"]: s for s in segments}
+    for ann in annotations:
+        seg = segment_lookup.get(str(ann.get("segment_id")))
+        cid = str(ann.get("character_id") or "").strip()
+        if not seg or not cid:
+            continue
+        speaker = seg.get("speaker")
+        if not speaker:
+            continue
+        try:
+            confidence = float(ann.get("confidence", 0.5) or 0.5)
+        except Exception:
+            confidence = 0.5
+        speaker_votes.setdefault(speaker, {}).setdefault(cid, 0.0)
+        speaker_votes[speaker][cid] += max(0.1, confidence)
+
+    dominant_character = {
+        speaker: max(votes.items(), key=lambda kv: kv[1])[0]
+        for speaker, votes in speaker_votes.items()
+        if votes
+    }
+
     for segment in segments:
         ann = by_id.get(segment["id"])
         if ann is None:
@@ -135,8 +162,13 @@ def _merge_video_annotations(segments, annotations, registry):
                 if ann.get(key):
                     segment[key] = ann[key]
 
+        # If this exact line was not visually attributed, reuse the dominant
+        # character for the same diarized speaker instead of creating a new voice.
         if not segment.get("character_id"):
-            segment["character_id"] = f'CHAR_{segment["speaker"]}'
+            segment["character_id"] = dominant_character.get(
+                segment.get("speaker"),
+                f'CHAR_{segment["speaker"]}',
+            )
 
         profile = registry.get(segment["character_id"], {})
         segment["voice_profile"] = profile.get("voice_profile", "")
