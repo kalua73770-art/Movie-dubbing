@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable
 
-from hindi_dubbing.audio_separation import separate_background
+from hindi_dubbing.background_reconstruction import reconstruct_background
 from hindi_dubbing.core.audio.processor import (
     assemble_track,
     extract_audio,
@@ -513,13 +513,14 @@ def run_pipeline(
         )
 
         report(
-            "separation",
-            f"Separating dialogue/music/effects via {settings.audio_stem_provider}",
+            "background",
+            "Reconstructing background music/ambience from dialogue-free cues",
         )
-        background = separate_background(
+        background = reconstruct_background(
             mix_audio,
+            source_video,
+            segments,
             work,
-            settings,
             log,
         )
 
