@@ -68,6 +68,8 @@ class Settings:
         os.getenv("GEMINI_TRANSCRIBE_TIMEOUT_MS", "600000")
     )
     tts_timeout_ms: int = int(os.getenv("GEMINI_TTS_TIMEOUT_MS", "60000"))
+    tts_batch_chars: int = int(os.getenv("TTS_BATCH_CHARS", "6000"))
+    tts_batch_max_segments: int = int(os.getenv("TTS_BATCH_MAX_SEGMENTS", "10"))
     video_timeout_ms: int = int(os.getenv("GEMINI_VIDEO_TIMEOUT_MS", "90000"))
     speaker_analysis_timeout_ms: int = int(
         os.getenv("GEMINI_SPEAKER_ANALYSIS_TIMEOUT_MS", "120000")
@@ -141,6 +143,10 @@ class Settings:
             raise RuntimeError("TRANSLATION_WORKERS must be >= 1")
         if self.tts_workers < 1:
             raise RuntimeError("TTS_WORKERS must be >= 1")
+        if self.tts_batch_chars < 500:
+            raise RuntimeError("TTS_BATCH_CHARS must be >= 500")
+        if self.tts_batch_max_segments < 2:
+            raise RuntimeError("TTS_BATCH_MAX_SEGMENTS must be >= 2")
         if self.video_analysis_max_windows < 1:
             raise RuntimeError("VIDEO_ANALYSIS_MAX_WINDOWS must be >= 1")
         for name, value in {

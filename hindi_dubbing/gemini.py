@@ -89,6 +89,11 @@ class GeminiService:
         )):
             return "auth"
         if any(x in message for x in (
+            "404", "not found", "requested entity was not found",
+            "model not found", "unknown model",
+        )):
+            return "model_unavailable"
+        if any(x in message for x in (
             "400", "invalid_argument", "bad request", "unsupported",
         )):
             return "request"
@@ -107,6 +112,8 @@ class GeminiService:
             return int(self.s.gemini_auth_cooldown_seconds)
         if kind == "transient":
             return int(self.s.gemini_transient_cooldown_seconds)
+        if kind == "model_unavailable":
+            return 86400
         return 0
 
     def _candidate_keys(
@@ -128,6 +135,9 @@ class GeminiService:
             order.insert(0, preferred)
 
         now = time.monotonic()
+        available = self._available_keys.get((task, model)) or self._available_keys.get(("tts", model))
+        if available:
+            order = [idx for idx in order if idx in available]
         ready = []
         cooling = []
         for idx in order:
@@ -181,6 +191,10 @@ class GeminiService:
                     cooldown,
                     str(exc)[:900],
                 )
+                # A model/endpoint 404 is deterministic for this API key/model;
+                # do not spend the rest of the key pool repeating it.
+                if kind == "model_unavailable":
+                    break
         raise RuntimeError(
             f"{task} failed for model={model} on all configured API keys: {last}"
         )
@@ -193,12 +207,15 @@ class GeminiService:
         handled by the runtime circuit breaker.
         """
         health = {}
+        self._available_keys: dict[tuple[str, str], set[int]] = {}
         for task, models in task_models.items():
             healthy = []
+            key_pool = self.s.api_keys if task == "tts" else self.s.api_keys[:2]
             for model in models:
                 ok = False
                 last_error = None
-                for key_index, key in enumerate(self.s.api_keys[:2]):
+                supported = set()
+                for key_index, key in enumerate(key_pool):
                     try:
                         client = self._client(key)
                         info = client.models.get(model=model)
@@ -208,9 +225,10 @@ class GeminiService:
                             task, model, key_index + 1, display,
                         )
                         ok = True
-                        break
+                        supported.add(key_index)
                     except Exception as exc:
                         last_error = exc
+                self._available_keys[("tts" if task == "tts" else task, model)] = supported
                 if ok:
                     healthy.append(model)
                 else:
@@ -694,7 +712,12 @@ class GeminiService:
             "Return exactly one line per input using ID|||Hindi text.\n\n"
             + "\n".join(lines)
         )
-        output, model = self.generate_text(prompt)
+        output, model = self.generate_text(
+            prompt,
+            preferred_key_index=preferred_key_index,
+            preferred_model_index=preferred_model_index,
+            previous_interaction_id=previous_interaction_id,
+        )
         result = {}
         for line in output.splitlines():
             if "|||" in line:
@@ -809,8 +832,9 @@ class GeminiService:
                     "generation_config": {"speech_config": [{"voice": voice}]},
                     "timeout": max(1, int(self.s.tts_timeout_ms / 1000)),
                 }
-                if previous_interaction_id:
-                    interaction_kwargs["previous_interaction_id"] = previous_interaction_id
+                # TTS models are handled as independent audio-generation calls.
+                # Do not attach Movie Brain interaction IDs: some TTS endpoints reject
+                # multiturn/previous_interaction_id even though the model itself is valid.
                 interaction = client.interactions.create(**interaction_kwargs)
                 data = getattr(getattr(interaction, "output_audio", None), "data", None)
                 if not data:
@@ -832,6 +856,105 @@ class GeminiService:
                 self.log.warning("Trying next TTS model after %s: %s", model, str(exc)[:800])
 
         raise RuntimeError(f"TTS failed on all configured models/keys: {last}")
+
+    def tts_batch(
+        self,
+        segments,
+        voices,
+        out_path: Path,
+        preferred_key_index: int | None = None,
+        preferred_model_index: int | None = None,
+        context_text: str = "",
+    ):
+        """Generate several dialogue turns in one TTS request.
+
+        TTS has an input limit of 8,192 tokens on the current 3.8 models, so the
+        caller keeps batches bounded by characters/turns. Up to two speakers are
+        supported by the TTS API.
+        """
+        last = None
+        models = list(self.s.tts_models)
+        if models and preferred_model_index is not None:
+            offset = preferred_model_index % len(models)
+            models = models[offset:] + models[:offset]
+
+        for model in models:
+            def action(client, key_index, _):
+                speaker_ids = list(dict.fromkeys(str(s["speaker"]) for s in segments))
+                if len(speaker_ids) > 2:
+                    raise ValueError("TTS batch has more than two speakers")
+
+                lines = []
+                if len(speaker_ids) == 1:
+                    for s in segments:
+                        lines.append(s["hindi"])
+                    prompt = (
+                        "Perform the following Hindi movie dialogue turns in order. "
+                        "Do not speak labels or instructions. Keep each turn distinct and "
+                        "insert a brief natural pause between turns. Preserve every word exactly.\n"
+                        + " <short pause> ".join(lines)
+                    )
+                    speech_config = [{"voice": voices[speaker_ids[0]]}]
+                else:
+                    names = {speaker_ids[0]: "Speaker 1", speaker_ids[1]: "Speaker 2"}
+                    lines = [
+                        f'{names[str(s["speaker"])]}: {s["hindi"]}'
+                        for s in segments
+                    ]
+                    prompt = (
+                        "Perform this conversation in order. Do not speak the speaker labels. "
+                        "Keep each turn distinct and insert a brief natural pause between turns.\n"
+                        + "\n".join(lines)
+                    )
+                    speech_config = {
+                        "mode": "conversational",
+                        "speakers": [
+                            {"speaker": "Speaker 1", "voice": voices[speaker_ids[0]]},
+                            {"speaker": "Speaker 2", "voice": voices[speaker_ids[1]]},
+                        ],
+                    }
+
+                if context_text:
+                    prompt = (
+                        "Use this locked continuity context only to guide voice/acting. "
+                        "Do not add facts or words:\n" + context_text[:3500] + "\n\n" + prompt
+                    )
+
+                self.log.info(
+                    "TTS batch model=%s key=#%d segments=%d speakers=%d",
+                    model, key_index + 1, len(segments), len(speaker_ids),
+                )
+                response = client.interactions.create(
+                    model=model,
+                    input=prompt,
+                    response_format={"type": "audio"},
+                    generation_config={"speech_config": speech_config},
+                    timeout=max(1, int(self.s.tts_timeout_ms / 1000)),
+                )
+                data = getattr(getattr(response, "output_audio", None), "data", None)
+                if not data:
+                    raise RuntimeError("empty batch TTS audio response")
+                raw = base64.b64decode(data) if isinstance(data, str) else bytes(data)
+                self._save_audio_data(raw, out_path)
+                return out_path
+
+            try:
+                self._attempt(
+                    task="tts-batch",
+                    model=model,
+                    action=action,
+                    preferred_key_index=preferred_key_index,
+                )
+                return model
+            except Exception as exc:
+                last = exc
+                self.log.warning(
+                    "Trying next batch TTS model after %s: %s",
+                    model,
+                    str(exc)[:800],
+                )
+
+        raise RuntimeError(f"Batch TTS failed on all configured models/keys: {last}")
 
     def _tts_request(self, client, model, segments, voices, timeout_seconds: int):
         speaker_ids = list(dict.fromkeys(s["speaker"] for s in segments))

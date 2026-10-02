@@ -16,6 +16,7 @@ from hindi_dubbing.core.audio.processor import (
     extract_range,
     fit_audio,
     trim_edge_silence,
+    silence_ranges,
     ffprobe_duration,
     probe_wav,
     run_cmd,
@@ -329,6 +330,105 @@ def _generate_segment_audio(
             segment["id"], best_duration, available,
         )
         return best_path
+
+
+def _tts_batches(segments, max_chars: int, max_segments: int):
+    batches = []
+    current = []
+    chars = 0
+    speakers = set()
+    for seg in sorted(segments, key=lambda x: float(x["start"])):
+        cost = len(seg.get("hindi", "")) + 60
+        seg_speaker = str(seg.get("speaker", ""))
+        if current and (
+            chars + cost > max_chars
+            or len(current) >= max_segments
+            or (seg_speaker not in speakers and len(speakers) >= 2)
+        ):
+            batches.append(current)
+            current = []
+            chars = 0
+            speakers = set()
+        current.append(seg)
+        chars += cost
+        speakers.add(seg_speaker)
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _split_batch_audio(
+    batch_audio: Path,
+    batch: list[dict],
+    segment_dir: Path,
+    log,
+) -> list[Path] | None:
+    # The TTS prompt inserts short pauses between turns. We use those pauses to
+    # recover per-line clips; if the model does not preserve separations cleanly,
+    # return None and let the caller fall back to safe per-line generation.
+    ranges = silence_ranges(
+        batch_audio,
+        log=log,
+        noise="-38dB",
+        min_silence=0.22,
+    )
+    if len(ranges) < len(batch):
+        return None
+    if len(ranges) > len(batch):
+        # Merge the shortest extra ranges into their nearest neighbour.
+        ranges = list(ranges[:len(batch)])
+    out = []
+    for seg, (start, end) in zip(batch, ranges):
+        path = segment_dir / f'{seg["id"]}_batch.wav'
+        extract_range(batch_audio, path, start, end, log)
+        trim_edge_silence(path, path.with_name(path.stem + "_trim.wav"), log)
+        path = path.with_name(path.stem + "_trim.wav")
+        observed = probe_wav(path)[3]
+        seg["tts_duration"] = observed
+        seg["dub_end"] = min(
+            float(seg["start"]) + observed,
+            float(seg.get("next_start", seg["start"] + observed)) - 0.02,
+        )
+        seg["tts_time_stretch"] = 1.0
+        out.append(path)
+    return out
+
+
+def _generate_tts_batch(
+    gemini,
+    batch,
+    voice_map,
+    segment_dir,
+    log,
+    batch_index,
+):
+    out = segment_dir / f"tts_batch_{batch_index:04d}.wav"
+    speakers = {str(s.get("speaker", "")) for s in batch}
+    if len(speakers) > 2:
+        return None
+    voices = {str(s.get("speaker", "")): voice_map[s["character_id"]] for s in batch}
+    context = "\n".join(
+        gemini._style(s)
+        for s in batch[:4]
+    )
+    try:
+        gemini.tts_batch(
+            batch,
+            voices,
+            out,
+            preferred_key_index=batch_index % max(1, len(settings.api_keys)),
+            preferred_model_index=batch_index % max(1, len(settings.tts_models)),
+            context_text=context,
+        )
+        paths = _split_batch_audio(out, batch, segment_dir, log)
+        return paths
+    except Exception as exc:
+        log.warning(
+            "TTS batch %d fallback to line-by-line: %s",
+            batch_index + 1,
+            str(exc)[:900],
+        )
+        return None
 
 
 def run_pipeline(
@@ -649,46 +749,68 @@ def run_pipeline(
                 else duration
             )
 
+        tts_batches = _tts_batches(
+            segments,
+            int(settings.tts_batch_chars),
+            int(settings.tts_batch_max_segments),
+        )
         tts_workers = min(
             max(1, int(settings.tts_workers)),
             max(1, len(settings.api_keys)),
-            max(1, len(segments)),
+            max(1, len(tts_batches)),
         )
         report(
             "tts",
-            f"Synthesizing {len(segments)} dialogue lines with {tts_workers} "
-            "parallel Gemini workers/keys and locked character voices",
+            f"Synthesizing {len(segments)} dialogue lines as {len(tts_batches)} "
+            f"large TTS batch(es) with {tts_workers} parallel workers/models",
         )
 
-        def synthesize_one(idx, segment):
-            audio_path = _generate_segment_audio(
+        def synthesize_batch(idx, batch):
+            paths = _generate_tts_batch(
                 gemini,
-                segment,
-                voice_map[segment["character_id"]],
+                batch,
+                voice_map,
                 segments_dir,
                 log,
-                preferred_key_index=idx % max(1, len(settings.api_keys)),
-                preferred_model_index=idx % max(1, len(settings.tts_models)),
-                context_text=brain.character_context(segment["character_id"]),
-                previous_interaction_id=context_id,
+                idx,
             )
-            return idx, audio_path
+            if paths is not None:
+                return idx, list(zip(batch, paths)), True
+
+            # Safe fallback: this batch failed or could not be segmented reliably.
+            fallback = []
+            for local_no, segment in enumerate(batch):
+                audio_path = _generate_segment_audio(
+                    gemini,
+                    segment,
+                    voice_map[segment["character_id"]],
+                    segments_dir,
+                    log,
+                    preferred_key_index=(idx * 4 + local_no) % max(1, len(settings.api_keys)),
+                    preferred_model_index=(idx + local_no) % max(1, len(settings.tts_models)),
+                    context_text=brain.character_context(segment["character_id"]),
+                    previous_interaction_id=None,
+                )
+                fallback.append((segment, audio_path))
+            return idx, fallback, False
 
         tts_results = [None] * len(segments)
         with ThreadPoolExecutor(max_workers=tts_workers) as pool:
-            tts_futures = {
-                pool.submit(synthesize_one, idx, segment): idx
-                for idx, segment in enumerate(segments)
+            futures = {
+                pool.submit(synthesize_batch, idx, batch): idx
+                for idx, batch in enumerate(tts_batches)
             }
-            tts_done = 0
-            for future in as_completed(tts_futures):
-                idx, audio_path = future.result()
-                tts_results[idx] = audio_path
-                tts_done += 1
+            done = 0
+            for future in as_completed(futures):
+                _, items, batched = future.result()
+                for segment, audio_path in items:
+                    segment["audio_path"] = str(audio_path)
+                    tts_results[segments.index(segment)] = audio_path
+                done += 1
                 report(
                     "tts",
-                    f"Completed dialogue {tts_done}/{len(segments)} "
-                    f"(slot {idx + 1}/{len(segments)})",
+                    f"Completed TTS batch {done}/{len(tts_batches)} "
+                    f"({'batched' if batched else 'fallback'})",
                 )
 
         for segment, audio_path in zip(segments, tts_results):
