@@ -68,6 +68,48 @@ class ContinuityTests(unittest.TestCase):
             brain.save()
             self.assertGreater(len(brain.agent_context()), 6500)
 
+    def test_antigravity_background_poll_contract(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+        from hindi_dubbing.antigravity import AntigravityService
+
+        settings = self.make_settings()
+        settings.antigravity_api_keys = ["ag1"]
+        settings.antigravity_timeout_ms = 1000
+        settings.antigravity_poll_interval_seconds = 1
+        settings.antigravity_max_wait_seconds = 10
+
+        service = AntigravityService(settings, logging.getLogger("test-ag"))
+        client = MagicMock()
+        created = SimpleNamespace(
+            id="ix1",
+            environment_id="env1",
+            status="in_progress",
+        )
+        completed = SimpleNamespace(
+            id="ix1",
+            environment_id="env1",
+            status="completed",
+            output_text='{"scene_summary":"ok","annotations":[]}',
+        )
+        client.interactions.create.return_value = created
+        service.clients["ag1"] = client
+
+        with patch.object(service, "_wait_for_completion", return_value=completed):
+            data, interaction_id, env_id, key = service.call(
+                "prompt",
+                [],
+                previous_id=None,
+                previous_environment=None,
+            )
+
+        kwargs = client.interactions.create.call_args.kwargs
+        self.assertTrue(kwargs["background"])
+        self.assertEqual(kwargs["environment"], "remote")
+        self.assertEqual(interaction_id, "ix1")
+        self.assertEqual(env_id, "env1")
+        self.assertEqual(key, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
