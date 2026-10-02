@@ -29,6 +29,7 @@ jobs:
 
     env:
       GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+      ANTIGRAVITY_API_KEYS: ${{ secrets.ANTIGRAVITY_API_KEYS || secrets.GEMINI_API_KEYS }}
       GEMINI_TRANSCRIBE_MODEL: gemini-3.5-transcribe
       GEMINI_TEXT_MODELS: gemini-3.5-flash-lite,gemini-3.1-flash-lite
       GEMINI_TTS_MODELS: gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts,gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts
@@ -46,6 +47,13 @@ jobs:
       TTS_WORKERS: "4"
       TTS_BATCH_CHARS: "6000"
       TTS_LANE_COOLDOWN_SECONDS: "20"
+      ENABLE_ANTIGRAVITY: "true"
+      ANTIGRAVITY_AGENT: "antigravity-preview-09-2026"
+      ANTIGRAVITY_TIMEOUT_MS: "90000"
+      ANTIGRAVITY_WINDOW_SECONDS: "240"
+      ANTIGRAVITY_MAX_WINDOWS: "8"
+      ANTIGRAVITY_MAX_KEYS: "2"
+      ANTIGRAVITY_MAX_TOTAL_TOKENS: "20000"
       TTS_BATCH_MAX_SEGMENTS: "12"
       TRANSLATION_BATCH_CHARS: "6000"
       VIDEO_ANALYSIS_MAX_WINDOWS: "6"
@@ -95,7 +103,7 @@ jobs:
         run: |
           python -m compileall -q hindi_dubbing
           python -c "from google import genai; from google.genai import types; print('google-genai import OK'); print(types.HttpOptions(timeout=120000))"
-          python -c "from hindi_dubbing.settings import settings; from hindi_dubbing.gemini import GeminiService; from hindi_dubbing.video_analysis import VideoAnalyzer; from hindi_dubbing.movie_brain import MovieBrain; from hindi_dubbing.background_reconstruction import reconstruct_background; from hindi_dubbing.pipeline.orchestrator import run_pipeline; print('pipeline imports OK')"
+          python -c "from hindi_dubbing.settings import settings; from hindi_dubbing.gemini import GeminiService; from hindi_dubbing.antigravity import AntigravityService; from hindi_dubbing.video_analysis import VideoAnalyzer; from hindi_dubbing.movie_brain import MovieBrain; from hindi_dubbing.background_reconstruction import reconstruct_background; from hindi_dubbing.pipeline.orchestrator import run_pipeline; print('pipeline imports OK')"
 
       - name: Run movie dubbing
         run: |
