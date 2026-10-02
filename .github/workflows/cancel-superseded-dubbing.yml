@@ -1,4 +1,4 @@
-name: Cancel Superseded Dubbing Tests
+name: Cancel Superseded Dubbing Runs
 
 on:
   push:
@@ -12,29 +12,33 @@ jobs:
   cancel-superseded:
     runs-on: ubuntu-latest
     steps:
-      - name: Cancel older Movie Dubbing Test runs
+      - name: Keep only the newest active dubbing/CI run per workflow
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          # Let the push-triggered Movie Dubbing Test run register before
-          # determining which active run is newest.
+          # Allow the push-triggered workflows to register before we select
+          # the newest active run.
           sleep 20
-          active_runs="$(
-            gh --repo "$GITHUB_REPOSITORY" run list \
-              --workflow test-dubbing.yml \
-              --limit 20 \
-              --json databaseId,status,createdAt \
-              --jq '[.[] | select(.status == "in_progress" or .status == "queued" or .status == "pending")] | sort_by(.createdAt)'
-          )"
-          keep_id="$(printf '%s' "$active_runs" | jq -r 'if length == 0 then "" else .[-1].databaseId end')"
-          echo "Keeping newest active Movie Dubbing Test run: ${keep_id:-none}"
 
-          printf '%s' "$active_runs" \
-            | jq -r '.[].databaseId' \
-            | while read -r run_id; do
-                [ -n "$run_id" ] || continue
-                [ "$run_id" = "$keep_id" ] && continue
-                echo "Cancelling superseded Movie Dubbing Test run $run_id"
-                gh --repo "$GITHUB_REPOSITORY" run cancel "$run_id" || true
-              done
+          cancel_older() {
+            workflow="$1"
+            label="$2"
+
+            active_runs="$(
+              gh --repo "$GITHUB_REPOSITORY" run list                 --workflow "$workflow"                 --limit 50                 --json databaseId,status,createdAt                 --jq '[.[] | select(.status == "in_progress" or .status == "queued" or .status == "pending")] | sort_by(.createdAt)'
+            )"
+
+            keep_id="$(printf '%s' "$active_runs" | jq -r 'if length == 0 then "" else .[-1].databaseId end')"
+            echo "Keeping newest active $label run: ${keep_id:-none}"
+
+            printf '%s' "$active_runs"               | jq -r '.[].databaseId'               | while read -r run_id; do
+                  [ -n "$run_id" ] || continue
+                  [ "$run_id" = "$keep_id" ] && continue
+                  echo "Cancelling superseded $label run $run_id"
+                  gh --repo "$GITHUB_REPOSITORY" run cancel "$run_id" || true
+                done
+          }
+
+          cancel_older "test-dubbing.yml" "Movie Dubbing Test"
+          cancel_older "ci.yml" "Movie Dubbing CI"
