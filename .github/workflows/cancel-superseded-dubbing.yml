@@ -1,0 +1,25 @@
+name: Cancel Superseded Dubbing Tests
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel-superseded:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel older Movie Dubbing Test runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          current_sha="${GITHUB_SHA}"
+          gh run list             --workflow test-dubbing.yml             --limit 20             --json databaseId,headSha,status             --jq ".[] | select(.headSha != \"$current_sha\" and (.status == \"in_progress\" or .status == \"queued\" or .status == \"pending\")) | .databaseId"             | while read -r run_id; do
+                [ -n "$run_id" ] || continue
+                echo "Cancelling superseded Movie Dubbing Test run $run_id"
+                gh run cancel "$run_id" || true
+              done
