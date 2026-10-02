@@ -493,7 +493,14 @@ class GeminiService:
         )
         return result
 
-    def translate_batch(self, segments):
+    def translate_batch(
+        self,
+        segments,
+        context_text="",
+        preferred_key_index=None,
+        preferred_model_index=None,
+        previous_interaction_id=None,
+    ):
         lines = [f'{s["id"]}|||{s["text"]}' for s in segments]
         prompt = (
             "Translate every line below into natural spoken Hindi for movie dubbing. "
@@ -858,6 +865,54 @@ class GeminiService:
 
         raise RuntimeError(f"TTS failed on all configured models/keys: {last}")
 
+    @staticmethod
+    def build_tts_input(segments, voices, context_text=""):
+        speaker_ids = list(dict.fromkeys(str(s["speaker"]) for s in segments))
+        if len(speaker_ids) > 2:
+            raise ValueError("Gemini TTS supports at most two speakers per request")
+
+        content = []
+        if context_text:
+            content.append({
+                "type": "text",
+                "text": (
+                    "Locked continuity context for acting only. Do not speak this context "
+                    "and do not add words.\n" + context_text[:3000]
+                ),
+            })
+
+        for index, seg in enumerate(segments):
+            text = str(seg["hindi"])
+            if len(speaker_ids) == 1 and index:
+                text = "<short pause> " + text
+            content.append({
+                "type": "text",
+                "text": text,
+                "annotations": [{
+                    "type": "speech_metadata",
+                    "speaker": str(seg["speaker"]),
+                    "style": GeminiService._style(seg),
+                }],
+            })
+
+        if len(speaker_ids) == 1:
+            speech_config = {
+                "speakers": [{
+                    "speaker": speaker_ids[0],
+                    "voice": voices[speaker_ids[0]],
+                }]
+            }
+        else:
+            speech_config = {
+                "mode": "conversational",
+                "speakers": [
+                    {"speaker": sid, "voice": voices[sid]}
+                    for sid in speaker_ids
+                ],
+            }
+
+        return [{"type": "user_input", "content": content}], speech_config
+
     def tts_lanes(self) -> list[tuple[str, int]]:
         """Return model/key lanes that survived TTS preflight.
 
@@ -884,13 +939,8 @@ class GeminiService:
         out_path: Path,
         model: str,
         key_index: int,
-        context_text: str = "",
+        context_text="",
     ):
-        """Run exactly one TTS request on one known model/key lane.
-
-        No hidden fallback loop is allowed here. A failure is returned to the
-        scheduler immediately so it can move the batch to another lane.
-        """
         if key_index < 0 or key_index >= len(self.s.api_keys):
             raise ValueError(f"invalid TTS key index: {key_index}")
 
@@ -898,43 +948,21 @@ class GeminiService:
             self.s.api_keys[key_index],
             timeout_ms=int(self.s.tts_timeout_ms),
         )
-        speaker_ids = list(dict.fromkeys(str(s["speaker"]) for s in segments))
-        if len(speaker_ids) > 2:
-            raise ValueError("TTS batch has more than two speakers")
-
-        if len(speaker_ids) == 1:
-            prompt = " <short pause> ".join(str(s["hindi"]) for s in segments)
-            speech_config = [{"voice": voices[speaker_ids[0]]}]
-        else:
-            names = {speaker_ids[0]: "Speaker 1", speaker_ids[1]: "Speaker 2"}
-            prompt = "\n".join(
-                f'{names[str(s["speaker"])]}: {s["hindi"]}'
-                for s in segments
-            )
-            speech_config = {
-                "mode": "conversational",
-                "speakers": [
-                    {"speaker": "Speaker 1", "voice": voices[speaker_ids[0]]},
-                    {"speaker": "Speaker 2", "voice": voices[speaker_ids[1]]},
-                ],
-            }
-
-        if context_text:
-            prompt = (
-                "Locked continuity context for acting only. Do not add words or facts.\n"
-                + context_text[:3000]
-                + "\n\n"
-                + prompt
-            )
-
+        input_value, speech_config = self.build_tts_input(
+            segments,
+            voices,
+            context_text=context_text,
+        )
         self.log.info(
             "TTS lane request model=%s key=#%d segments=%d speakers=%d",
-            model, key_index + 1, len(segments), len(speaker_ids),
+            model,
+            key_index + 1,
+            len(segments),
+            len({str(s["speaker"]) for s in segments}),
         )
-
         response = client.interactions.create(
             model=model,
-            input=prompt,
+            input=input_value,
             response_format={"type": "audio"},
             generation_config={"speech_config": speech_config},
             timeout=max(1, int(self.s.tts_timeout_ms / 1000)),
@@ -970,53 +998,21 @@ class GeminiService:
 
         for model in models:
             def action(client, key_index, _):
-                speaker_ids = list(dict.fromkeys(str(s["speaker"]) for s in segments))
-                if len(speaker_ids) > 2:
-                    raise ValueError("TTS batch has more than two speakers")
-
-                lines = []
-                if len(speaker_ids) == 1:
-                    for s in segments:
-                        lines.append(s["hindi"])
-                    prompt = (
-                        "Perform the following Hindi movie dialogue turns in order. "
-                        "Do not speak labels or instructions. Keep each turn distinct and "
-                        "insert a brief natural pause between turns. Preserve every word exactly.\n"
-                        + " <short pause> ".join(lines)
-                    )
-                    speech_config = [{"voice": voices[speaker_ids[0]]}]
-                else:
-                    names = {speaker_ids[0]: "Speaker 1", speaker_ids[1]: "Speaker 2"}
-                    lines = [
-                        f'{names[str(s["speaker"])]}: {s["hindi"]}'
-                        for s in segments
-                    ]
-                    prompt = (
-                        "Perform this conversation in order. Do not speak the speaker labels. "
-                        "Keep each turn distinct and insert a brief natural pause between turns.\n"
-                        + "\n".join(lines)
-                    )
-                    speech_config = {
-                        "mode": "conversational",
-                        "speakers": [
-                            {"speaker": "Speaker 1", "voice": voices[speaker_ids[0]]},
-                            {"speaker": "Speaker 2", "voice": voices[speaker_ids[1]]},
-                        ],
-                    }
-
-                if context_text:
-                    prompt = (
-                        "Use this locked continuity context only to guide voice/acting. "
-                        "Do not add facts or words:\n" + context_text[:3500] + "\n\n" + prompt
-                    )
-
+                input_value, speech_config = self.build_tts_input(
+                    segments,
+                    voices,
+                    context_text=context_text,
+                )
                 self.log.info(
                     "TTS batch model=%s key=#%d segments=%d speakers=%d",
-                    model, key_index + 1, len(segments), len(speaker_ids),
+                    model,
+                    key_index + 1,
+                    len(segments),
+                    len({str(s["speaker"]) for s in segments}),
                 )
                 response = client.interactions.create(
                     model=model,
-                    input=prompt,
+                    input=input_value,
                     response_format={"type": "audio"},
                     generation_config={"speech_config": speech_config},
                     timeout=max(1, int(self.s.tts_timeout_ms / 1000)),
