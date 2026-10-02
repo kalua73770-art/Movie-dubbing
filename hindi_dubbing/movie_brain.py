@@ -6,14 +6,20 @@ from pathlib import Path
 
 
 class MovieBrain:
-    """Compact persistent continuity state for the whole movie."""
+    """Persistent canonical movie memory.
 
-    VERSION = 1
-    MAX_SCENE_SUMMARIES = 12
-    MAX_GLOSSARY = 80
-    MAX_DECISIONS = 80
-    MAX_CHARACTERS = 80
-    MAX_CONTEXT_CHARS = 6500
+    The JSON file is the source of truth. Small worker context is derived from it;
+    the full continuity state is not limited to the worker prompt size.
+    """
+
+    VERSION = 2
+    MAX_SCENE_SUMMARIES = 200
+    MAX_GLOSSARY = 300
+    MAX_DECISIONS = 200
+    MAX_EVENTS = 500
+    MAX_CHARACTERS = 200
+    WORKER_CONTEXT_CHARS = 6500
+    AGENT_CONTEXT_CHARS = 50000
 
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -27,8 +33,10 @@ class MovieBrain:
             "characters": {},
             "voice_locks": {},
             "relationships": [],
+            "timeline": [],
             "scene_summaries": [],
             "glossary": {},
+            "important_events": [],
             "decisions": [],
             "interaction_ids": {},
         }
@@ -77,7 +85,13 @@ class MovieBrain:
                     "confidence": 0.0,
                 },
             )
-            for key in ("name", "gender", "age_group", "voice_profile", "personality"):
+            for key in (
+                "name",
+                "gender",
+                "age_group",
+                "voice_profile",
+                "personality",
+            ):
                 value = incoming.get(key)
                 if value not in (None, "") and not current.get(key):
                     current[key] = value
@@ -89,18 +103,59 @@ class MovieBrain:
             except Exception:
                 pass
 
-    def lock_voices(self, proposed: dict[str, str]) -> dict[str, str]:
-        locks = self.data.setdefault("voice_locks", {})
-        effective = {}
-        for cid, voice in (proposed or {}).items():
-            cid = str(cid)
-            existing = locks.get(cid)
-            if existing:
-                effective[cid] = existing
-            else:
-                locks[cid] = str(voice)
-                effective[cid] = str(voice)
-        return effective
+    def apply_agent_update(
+        self,
+        update: dict,
+        segment_ids: set[str] | None = None,
+    ) -> list[dict]:
+        """Safely merge Antigravity scene reasoning without overriding locked state."""
+        raw_chars = update.get("characters") or []
+        if isinstance(raw_chars, dict):
+            registry = raw_chars
+        else:
+            registry = {
+                str(c.get("character_id")): c
+                for c in raw_chars
+                if isinstance(c, dict) and c.get("character_id")
+            }
+        self.merge_characters(registry)
+
+        self.add_relationships(update.get("relationships", []))
+        self.add_glossary(update.get("glossary", {}))
+
+        for event in (update.get("important_events") or update.get("events") or []):
+            self.add_event(event)
+
+        for decision in update.get("decisions", []) or []:
+            self.add_decision(str(decision))
+
+        summary = str(update.get("scene_summary") or "").strip()
+        if summary:
+            self.add_scene_summary(
+                float(update.get("scene_start", 0) or 0),
+                float(update.get("scene_end", update.get("scene_start", 0)) or 0),
+                summary,
+            )
+
+        accepted = []
+        valid_ids = segment_ids or set()
+        for ann in update.get("annotations", []) or []:
+            if not isinstance(ann, dict):
+                continue
+            sid = str(ann.get("segment_id") or "")
+            cid = str(ann.get("character_id") or "")
+            if valid_ids and sid not in valid_ids:
+                continue
+            try:
+                confidence = float(ann.get("confidence", 0.0) or 0.0)
+            except Exception:
+                confidence = 0.0
+            if not sid or not cid or confidence < 0.55:
+                continue
+            accepted.append(ann)
+
+        self.compact(save=False)
+        return accepted
 
     def add_relationships(self, values) -> None:
         items = self.data.setdefault("relationships", [])
@@ -117,11 +172,13 @@ class MovieBrain:
         summary = str(summary or "").strip()
         if not summary:
             return
-        self.data.setdefault("scene_summaries", []).append({
-            "start": round(float(start), 3),
-            "end": round(float(end), 3),
-            "summary": summary[:800],
-        })
+        self.data.setdefault("scene_summaries", []).append(
+            {
+                "start": round(float(start), 3),
+                "end": round(float(end), 3),
+                "summary": summary[:1200],
+            }
+        )
         self.compact(save=False)
 
     def add_glossary(self, values: dict[str, str]) -> None:
@@ -130,13 +187,22 @@ class MovieBrain:
             key = str(key).strip()
             value = str(value).strip()
             if key and value and key not in glossary:
-                glossary[key] = value[:300]
+                glossary[key] = value[:500]
+        self.compact(save=False)
+
+    def add_event(self, value) -> None:
+        if isinstance(value, dict):
+            event = dict(value)
+        else:
+            event = {"description": str(value or "").strip()}
+        if event.get("description") or event.get("event"):
+            self.data.setdefault("important_events", []).append(event)
         self.compact(save=False)
 
     def add_decision(self, value: str) -> None:
         value = str(value or "").strip()
         if value:
-            self.data.setdefault("decisions", []).append(value[:600])
+            self.data.setdefault("decisions", []).append(value[:800])
             self.compact(save=False)
 
     def set_interaction_id(self, name: str, interaction_id: str | None) -> None:
@@ -151,18 +217,26 @@ class MovieBrain:
         for key, limit in (
             ("scene_summaries", self.MAX_SCENE_SUMMARIES),
             ("decisions", self.MAX_DECISIONS),
+            ("important_events", self.MAX_EVENTS),
         ):
             values = self.data.setdefault(key, [])
             if len(values) > limit:
                 self.data[key] = values[-limit:]
+
         glossary = self.data.setdefault("glossary", {})
         if len(glossary) > self.MAX_GLOSSARY:
-            keys = list(glossary)[: self.MAX_GLOSSARY]
+            keys = list(glossary)[-self.MAX_GLOSSARY :]
             self.data["glossary"] = {k: glossary[k] for k in keys}
+
         chars = self.data.setdefault("characters", {})
         if len(chars) > self.MAX_CHARACTERS:
             keys = list(chars)[: self.MAX_CHARACTERS]
             self.data["characters"] = {k: chars[k] for k in keys}
+
+        relationships = self.data.setdefault("relationships", [])
+        if len(relationships) > 300:
+            self.data["relationships"] = relationships[-300:]
+
         if save:
             self.save()
 
@@ -170,7 +244,10 @@ class MovieBrain:
         cid = str(character_id or "").strip()
         card = self.data.get("characters", {}).get(cid, {})
         if not card:
-            return f"character_id={cid or 'unknown'}; no confirmed character facts"
+            return (
+                f"character_id={cid or 'unknown'}; "
+                "no confirmed character facts"
+            )
         return (
             f"character_id={cid}; name={card.get('name', cid)}; "
             f"gender={card.get('gender', 'ambiguous')}; "
@@ -178,7 +255,7 @@ class MovieBrain:
             f"voice_profile={card.get('voice_profile', '')}; "
             f"personality={card.get('personality', '')}; "
             f"locked_voice={self.data.get('voice_locks', {}).get(cid, '')}"
-        )[:1200]
+        )[:1600]
 
     def context_for_segments(self, segments: list[dict]) -> str:
         ids = []
@@ -186,41 +263,64 @@ class MovieBrain:
             cid = str(segment.get("character_id") or "")
             if cid and cid not in ids:
                 ids.append(cid)
+
         cards = [self.character_context(cid) for cid in ids[:20]]
-        scenes = self.data.get("scene_summaries", [])[-4:]
+        scenes = self.data.get("scene_summaries", [])[-6:]
         glossary = self.data.get("glossary", {})
-        decisions = self.data.get("decisions", [])[-8:]
+        decisions = self.data.get("decisions", [])[-12:]
+        events = self.data.get("important_events", [])[-8:]
+
         parts = [
-            "CANONICAL MOVIE BRAIN. Project state is the source of truth; never invent missing facts.",
+            "CANONICAL MOVIE BRAIN. Project state is the source of truth; "
+            "never invent missing facts.",
             "Characters:\n" + "\n".join("- " + c for c in cards),
         ]
         if scenes:
             parts.append(
-                "Recent scene summaries:\n" +
-                "\n".join(
-                    f"- {s.get('start', 0):.1f}-{s.get('end', 0):.1f}s: {s.get('summary', '')}"
+                "Recent scene summaries:\n"
+                + "\n".join(
+                    f"- {s.get('start', 0):.1f}-{s.get('end', 0):.1f}s: "
+                    f"{s.get('summary', '')}"
                     for s in scenes
+                )
+            )
+        if events:
+            parts.append(
+                "Important events:\n"
+                + "\n".join(
+                    "- " + json.dumps(e, ensure_ascii=False) for e in events
                 )
             )
         if glossary:
             parts.append(
-                "Glossary:\n" +
-                "\n".join(f"- {k}: {v}" for k, v in list(glossary.items())[:30])
+                "Glossary:\n"
+                + "\n".join(
+                    f"- {k}: {v}"
+                    for k, v in list(glossary.items())[-40:]
+                )
             )
         if decisions:
             parts.append(
-                "Locked decisions:\n" + "\n".join(f"- {d}" for d in decisions)
+                "Locked decisions:\n"
+                + "\n".join(f"- {d}" for d in decisions)
             )
-        return "\n\n".join(parts)[: self.MAX_CONTEXT_CHARS]
+        return "\n\n".join(parts)[: self.WORKER_CONTEXT_CHARS]
+
+    def agent_context(self, max_chars: int | None = None) -> str:
+        """Full continuity snapshot for Antigravity, not worker context."""
+        limit = int(max_chars or self.AGENT_CONTEXT_CHARS)
+        return json.dumps(
+            self.snapshot(),
+            ensure_ascii=False,
+            indent=2,
+        )[:limit]
 
     def seed_prompt(self) -> str:
         return (
             "You are the continuity memory for a movie-dubbing pipeline. "
-            "Treat the following compact canonical state as authoritative. "
+            "Treat the following canonical state as authoritative. "
             "Do not invent character facts, relationships, voices or events. "
             "Use unknown/ambiguous when evidence is insufficient. "
             "This is a read-only context seed for parallel downstream tasks.\n\n"
-            + self.context_for_segments(
-                [{"character_id": cid} for cid in list(self.data.get("characters", {}))[:20]]
-            )
+            + self.agent_context()
         )
