@@ -663,6 +663,13 @@ def run_pipeline(
                 "brain",
                 "Using Antigravity for scene-level character continuity and movie memory",
             )
+            log.info(
+                "ANTIGRAVITY runtime=polling http_timeout=%ss max_wait=%ss poll_interval=%ss windows<=%d",
+                int(settings.antigravity_timeout_ms) / 1000,
+                settings.antigravity_max_wait_seconds,
+                settings.antigravity_poll_interval_seconds,
+                settings.antigravity_max_windows,
+            )
             try:
                 antigravity_result = AntigravityService(
                     settings,
