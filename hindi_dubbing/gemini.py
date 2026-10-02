@@ -1043,27 +1043,10 @@ class GeminiService:
         raise RuntimeError(f"Batch TTS failed on all configured models/keys: {last}")
 
     def _tts_request(self, client, model, segments, voices, timeout_seconds: int):
-        speaker_ids = list(dict.fromkeys(s["speaker"] for s in segments))
-        if len(speaker_ids) > 2:
-            raise RuntimeError("Gemini TTS supports at most two speakers per request")
-
-        if len(speaker_ids) == 1:
-            prompt = "\n".join(s["hindi"] for s in segments)
-            speech_config = [{"voice": voices[speaker_ids[0]]}]
-        else:
-            names = {speaker_ids[0]: "Speaker 1", speaker_ids[1]: "Speaker 2"}
-            prompt = "\n".join(f'{names[s["speaker"]]}: {s["hindi"]}' for s in segments)
-            speech_config = {
-                "mode": "conversational",
-                "speakers": [
-                    {"speaker": "Speaker 1", "voice": voices[speaker_ids[0]]},
-                    {"speaker": "Speaker 2", "voice": voices[speaker_ids[1]]},
-                ],
-            }
-
+        input_value, speech_config = self.build_tts_input(segments, voices)
         return client.interactions.create(
             model=model,
-            input=prompt,
+            input=input_value,
             response_format={"type": "audio"},
             generation_config={"speech_config": speech_config},
             timeout=timeout_seconds,
