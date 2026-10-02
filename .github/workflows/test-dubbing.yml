@@ -64,8 +64,16 @@ jobs:
           echo "Input video:"
           ls -lh "$VIDEO_PATH"
 
-      - name: Check FFmpeg
-        run: ffmpeg -version | head -n 1
+      - name: Setup FFmpeg
+        uses: FedericoCarboni/setup-ffmpeg@v3.1
+        with:
+          ffmpeg-version: release
+          linking-type: static
+
+      - name: Verify FFmpeg
+        run: |
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
 
       - name: Set up Python
         uses: actions/setup-python@v6
