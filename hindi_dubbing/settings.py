@@ -71,6 +71,33 @@ class Settings:
     tts_batch_chars: int = int(os.getenv("TTS_BATCH_CHARS", "6000"))
     tts_batch_max_segments: int = int(os.getenv("TTS_BATCH_MAX_SEGMENTS", "12"))
     tts_lane_cooldown_seconds: int = int(os.getenv("TTS_LANE_COOLDOWN_SECONDS", "20"))
+
+    antigravity_api_keys: list[str] = field(
+        default_factory=lambda: _csv(
+            "ANTIGRAVITY_API_KEYS",
+            os.getenv("GEMINI_API_KEYS", ""),
+        )
+    )
+    antigravity_agent: str = os.getenv(
+        "ANTIGRAVITY_AGENT",
+        "antigravity-preview-09-2026",
+    )
+    enable_antigravity: bool = _bool("ENABLE_ANTIGRAVITY", True)
+    antigravity_timeout_ms: int = int(
+        os.getenv("ANTIGRAVITY_TIMEOUT_MS", "90000")
+    )
+    antigravity_window_seconds: int = int(
+        os.getenv("ANTIGRAVITY_WINDOW_SECONDS", "240")
+    )
+    antigravity_max_windows: int = int(
+        os.getenv("ANTIGRAVITY_MAX_WINDOWS", "8")
+    )
+    antigravity_max_keys: int = int(
+        os.getenv("ANTIGRAVITY_MAX_KEYS", "2")
+    )
+    antigravity_max_total_tokens: int = int(
+        os.getenv("ANTIGRAVITY_MAX_TOTAL_TOKENS", "20000")
+    )
     video_timeout_ms: int = int(os.getenv("GEMINI_VIDEO_TIMEOUT_MS", "90000"))
     speaker_analysis_timeout_ms: int = int(
         os.getenv("GEMINI_SPEAKER_ANALYSIS_TIMEOUT_MS", "120000")
@@ -148,6 +175,16 @@ class Settings:
             raise RuntimeError("TTS_BATCH_CHARS must be >= 500")
         if self.tts_batch_max_segments < 2:
             raise RuntimeError("TTS_BATCH_MAX_SEGMENTS must be >= 2")
+        if self.antigravity_window_seconds < 30:
+            raise RuntimeError("ANTIGRAVITY_WINDOW_SECONDS must be >= 30")
+        if self.antigravity_max_windows < 1:
+            raise RuntimeError("ANTIGRAVITY_MAX_WINDOWS must be >= 1")
+        if self.antigravity_max_keys < 1:
+            raise RuntimeError("ANTIGRAVITY_MAX_KEYS must be >= 1")
+        if self.antigravity_timeout_ms <= 0:
+            raise RuntimeError("ANTIGRAVITY_TIMEOUT_MS must be > 0")
+        if self.antigravity_max_total_tokens < 1000:
+            raise RuntimeError("ANTIGRAVITY_MAX_TOTAL_TOKENS must be >= 1000")
         if self.video_analysis_max_windows < 1:
             raise RuntimeError("VIDEO_ANALYSIS_MAX_WINDOWS must be >= 1")
         for name, value in {
