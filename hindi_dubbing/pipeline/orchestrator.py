@@ -220,7 +220,15 @@ def _make_mix_audio(source_video: Path, out: Path, log):
     )
 
 
-def _generate_segment_audio(gemini, segment, voice, segment_dir, log):
+def _generate_segment_audio(
+    gemini,
+    segment,
+    voice,
+    segment_dir,
+    log,
+    preferred_key_index: int | None = None,
+    preferred_model_index: int | None = None,
+):
     preferred = max(0.25, float(segment["end"]) - float(segment["start"]))
     next_start = float(segment.get("next_start", segment["start"] + preferred))
     available = max(preferred, next_start - float(segment["start"]) - 0.06)
@@ -235,7 +243,13 @@ def _generate_segment_audio(gemini, segment, voice, segment_dir, log):
 
     for attempt in range(attempts + 1):
         raw = segment_dir / f'{segment["id"]}_attempt{attempt}.wav'
-        gemini.tts_segment(segment, voice, raw)
+        gemini.tts_segment(
+            segment,
+            voice,
+            raw,
+            preferred_key_index=preferred_key_index,
+            preferred_model_index=preferred_model_index,
+        )
 
         trimmed = segment_dir / f'{segment["id"]}_attempt{attempt}_trim.wav'
         trim_edge_silence(raw, trimmed, log)
@@ -542,20 +556,44 @@ def run_pipeline(
             "translation",
             "Generating duration-aware Hindi dialogue",
         )
-        for batch_no, batch in enumerate(
-            _batch_by_chars(
-                segments,
-                settings.translation_batch_chars,
-            ),
-            1,
-        ):
-            report(
-                "translation",
-                f"Translation batch {batch_no}",
+        translation_batches = _batch_by_chars(
+            segments,
+            settings.translation_batch_chars,
+        )
+        translation_workers = min(
+            max(1, int(settings.translation_workers)),
+            max(1, len(settings.api_keys)),
+            max(1, len(translation_batches)),
+        )
+        report(
+            "translation",
+            f"Translating {len(segments)} lines in {len(translation_batches)} "
+            f"large batch(es) with {translation_workers} worker(s)",
+        )
+
+        def translate_one(batch_index, batch):
+            translated = gemini.translate_for_duration(
+                batch,
+                preferred_key_index=batch_index % max(1, len(settings.api_keys)),
+                preferred_model_index=batch_index % max(1, len(settings.text_models)),
             )
-            translated = gemini.translate_for_duration(batch)
-            for segment in batch:
-                segment["hindi"] = translated[segment["id"]]
+            return batch_index, translated
+
+        with ThreadPoolExecutor(max_workers=translation_workers) as pool:
+            translation_futures = [
+                pool.submit(translate_one, batch_index, batch)
+                for batch_index, batch in enumerate(translation_batches)
+            ]
+            translated_done = 0
+            for future in as_completed(translation_futures):
+                batch_index, translated = future.result()
+                for segment in translation_batches[batch_index]:
+                    segment["hindi"] = translated[segment["id"]]
+                translated_done += 1
+                report(
+                    "translation",
+                    f"Completed translation batch {translated_done}/{len(translation_batches)}",
+                )
 
         audio_items = []
         ordered_segments = sorted(
@@ -569,22 +607,47 @@ def run_pipeline(
                 else duration
             )
 
+        tts_workers = min(
+            max(1, int(settings.tts_workers)),
+            max(1, len(settings.api_keys)),
+            max(1, len(segments)),
+        )
         report(
             "tts",
-            "Synthesizing each dialogue line with locked character voice and acting style",
+            f"Synthesizing {len(segments)} dialogue lines with {tts_workers} "
+            "parallel Gemini workers/keys and locked character voices",
         )
-        for idx, segment in enumerate(segments, 1):
-            report(
-                "tts",
-                f"Dialogue {idx}/{len(segments)}",
-            )
+
+        def synthesize_one(idx, segment):
             audio_path = _generate_segment_audio(
                 gemini,
                 segment,
                 voice_map[segment["character_id"]],
                 segments_dir,
                 log,
+                preferred_key_index=idx % max(1, len(settings.api_keys)),
+                preferred_model_index=idx % max(1, len(settings.tts_models)),
             )
+            return idx, audio_path
+
+        tts_results = [None] * len(segments)
+        with ThreadPoolExecutor(max_workers=tts_workers) as pool:
+            tts_futures = {
+                pool.submit(synthesize_one, idx, segment): idx
+                for idx, segment in enumerate(segments)
+            }
+            tts_done = 0
+            for future in as_completed(tts_futures):
+                idx, audio_path = future.result()
+                tts_results[idx] = audio_path
+                tts_done += 1
+                report(
+                    "tts",
+                    f"Completed dialogue {tts_done}/{len(segments)} "
+                    f"(slot {idx + 1}/{len(segments)})",
+                )
+
+        for segment, audio_path in zip(segments, tts_results):
             segment["audio_path"] = str(audio_path)
             audio_items.append(
                 (segment["start"], segment["dub_end"], audio_path)
