@@ -29,6 +29,7 @@ class GeminiService:
         self._clients: dict[tuple[str, int], genai.Client] = {}
         self._cooldowns: dict[tuple[str, str, str], float] = {}
         self._last_good: dict[tuple[str, str], int] = {}
+        self._available_keys: dict[tuple[str, str], set[int]] = {}
 
     def _task_timeout_ms(self, task: str) -> int:
         if task.startswith("tts"):
