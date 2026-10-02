@@ -26,22 +26,37 @@ class GeminiService:
         self.log = log or logging.getLogger("gemini")
         self.s.validate()
         self._lock = threading.RLock()
-        self._clients: dict[str, genai.Client] = {}
+        self._clients: dict[tuple[str, int], genai.Client] = {}
         self._cooldowns: dict[tuple[str, str, str], float] = {}
         self._last_good: dict[tuple[str, str], int] = {}
 
-    def _client(self, key: str) -> genai.Client:
+    def _task_timeout_ms(self, task: str) -> int:
+        if task.startswith("tts"):
+            return int(self.s.tts_timeout_ms)
+        if task == "text":
+            return int(self.s.text_timeout_ms)
+        if task == "transcribe":
+            return int(self.s.transcribe_timeout_ms)
+        if task == "video":
+            return int(self.s.video_timeout_ms)
+        if task == "speaker-analysis":
+            return int(self.s.speaker_analysis_timeout_ms)
+        return int(self.s.gemini_http_timeout_ms)
+
+    def _client(self, key: str, timeout_ms: int | None = None) -> genai.Client:
+        effective_timeout = int(timeout_ms or self.s.gemini_http_timeout_ms)
+        cache_key = (key, effective_timeout)
         with self._lock:
-            client = self._clients.get(key)
+            client = self._clients.get(cache_key)
             if client is None:
                 client = genai.Client(
                     api_key=key,
                     http_options=types.HttpOptions(
-                        timeout=int(self.s.gemini_http_timeout_ms),
+                        timeout=effective_timeout,
                         retry_options=types.HttpRetryOptions(attempts=1),
                     ),
                 )
-                self._clients[key] = client
+                self._clients[cache_key] = client
             return client
 
     @staticmethod
@@ -146,8 +161,9 @@ class GeminiService:
     ):
         last: Exception | None = None
         candidates = self._candidate_keys(task, model, preferred_key_index)
+        timeout_ms = self._task_timeout_ms(task)
         for key_index, key in candidates:
-            client = self._client(key)
+            client = self._client(key, timeout_ms=timeout_ms)
             try:
                 result = action(client, key_index, key)
                 self._record_success(task, model, key_index)
@@ -207,9 +223,18 @@ class GeminiService:
                 self.log.warning("No preflight-ready models for task=%s", task)
         return health
 
-    def generate_text(self, prompt, preferred_key_index: int | None = None):
+    def generate_text(
+        self,
+        prompt,
+        preferred_key_index: int | None = None,
+        preferred_model_index: int | None = None,
+    ):
         last: Exception | None = None
-        for model in self.s.text_models:
+        models = list(self.s.text_models)
+        if models and preferred_model_index is not None:
+            offset = preferred_model_index % len(models)
+            models = models[offset:] + models[:offset]
+        for model in models:
             try:
                 self.log.info("Text model=%s", model)
 
@@ -412,7 +437,11 @@ class GeminiService:
             "Return exactly one line per input in the format ID|||Hindi text.\n\n"
             + "\n".join(lines)
         )
-        output, model = self.generate_text(prompt)
+        output, model = self.generate_text(
+            prompt,
+            preferred_key_index=preferred_key_index,
+            preferred_model_index=preferred_model_index,
+        )
         result = {}
         for line in output.splitlines():
             if "|||" in line:
@@ -572,7 +601,12 @@ class GeminiService:
         self.log.info("Character voice lock: %s", result)
         return result
 
-    def translate_for_duration(self, segments):
+    def translate_for_duration(
+        self,
+        segments,
+        preferred_key_index: int | None = None,
+        preferred_model_index: int | None = None,
+    ):
         lines = []
         for s in segments:
             duration = max(0.25, float(s["end"]) - float(s["start"]))
@@ -669,10 +703,22 @@ class GeminiService:
             wf.setframerate(24000)
             wf.writeframes(raw)
 
-    def tts_segment(self, segment, voice: str, out_path: Path):
+    def tts_segment(
+        self,
+        segment,
+        voice: str,
+        out_path: Path,
+        preferred_key_index: int | None = None,
+        preferred_model_index: int | None = None,
+    ):
         last: Exception | None = None
 
-        for model in self.s.tts_models:
+        models = list(self.s.tts_models)
+        if models and preferred_model_index is not None:
+            offset = preferred_model_index % len(models)
+            models = models[offset:] + models[:offset]
+
+        for model in models:
             def action(client, key_index, _):
                 style = self._style(segment)
                 self.log.info(
@@ -708,6 +754,7 @@ class GeminiService:
                     task="tts",
                     model=model,
                     action=action,
+                    preferred_key_index=preferred_key_index,
                 )
                 return model
             except Exception as exc:
