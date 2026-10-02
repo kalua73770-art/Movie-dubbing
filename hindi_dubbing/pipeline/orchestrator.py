@@ -25,6 +25,7 @@ from hindi_dubbing.core.audio.processor import (
     split_audio,
 )
 from hindi_dubbing.core.mixing.mixer import mix_final
+from hindi_dubbing.antigravity import AntigravityService
 from hindi_dubbing.gemini import GeminiService
 from hindi_dubbing.movie_brain import MovieBrain
 from hindi_dubbing.settings import settings
@@ -636,10 +637,59 @@ def run_pipeline(
             )
 
         registry = {}
-        if settings.enable_video_analysis:
+        reasoning_ok = False
+
+        if settings.enable_antigravity:
+            report(
+                "brain",
+                "Using Antigravity for scene-level character continuity and movie memory",
+            )
+            try:
+                antigravity_result = AntigravityService(
+                    settings,
+                    log,
+                ).analyze(
+                    source_video,
+                    segments,
+                    brain,
+                    work,
+                )
+                annotations = antigravity_result.get("annotations", [])
+                registry = antigravity_result.get("characters", {}) or {}
+                for scene in antigravity_result.get("scene_summaries", []):
+                    brain.add_scene_summary(
+                        scene.get("start", 0),
+                        scene.get("end", 0),
+                        scene.get("summary", ""),
+                    )
+                brain.add_relationships(antigravity_result.get("relationships", []))
+                brain.add_glossary(antigravity_result.get("glossary", {}))
+                for event in antigravity_result.get("important_events", []):
+                    brain.add_event(event)
+                for decision in antigravity_result.get("decisions", []):
+                    brain.add_decision(decision)
+
+                _merge_video_annotations(
+                    segments,
+                    annotations,
+                    registry,
+                )
+                reasoning_ok = bool(annotations or registry)
+                brain.save()
+                report(
+                    "brain",
+                    "Antigravity continuity pass completed",
+                )
+            except Exception as exc:
+                log.warning(
+                    "Antigravity continuity pass unavailable; falling back to Gemini video analysis: %s",
+                    str(exc)[:1200],
+                )
+
+        if not reasoning_ok and settings.enable_video_analysis:
             report(
                 "video",
-                "Using bounded Gemini video understanding for character/acting analysis",
+                "Using bounded Gemini video understanding as continuity fallback",
             )
             try:
                 video_result = VideoAnalyzer(
@@ -663,15 +713,15 @@ def run_pipeline(
                 )
             except Exception as exc:
                 log.warning(
-                    "Video analysis failed; using audio diarization fallback: %s",
+                    "Gemini video analysis failed; using audio diarization fallback: %s",
                     str(exc)[:1200],
                 )
                 registry = _build_fallback_registry(segments)
                 _merge_video_annotations(segments, [], registry)
-        else:
+        elif not reasoning_ok:
             report(
                 "video",
-                "Video analysis disabled; using audio diarization fallback",
+                "Scene reasoning disabled; using audio diarization fallback",
             )
             registry = _build_fallback_registry(segments)
             _merge_video_annotations(segments, [], registry)
@@ -716,8 +766,9 @@ def run_pipeline(
             for cid in voice_map
         }
         state["brain"] = brain.snapshot()
+        brain.save()
         report(
-            "video",
+            "brain",
             f"Locked {len(voice_map)} character voices and acting profiles",
         )
 
