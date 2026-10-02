@@ -17,9 +17,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          current_sha="${GITHUB_SHA}"
-          gh run list             --workflow test-dubbing.yml             --limit 20             --json databaseId,headSha,status             --jq ".[] | select(.headSha != \"$current_sha\" and (.status == \"in_progress\" or .status == \"queued\" or .status == \"pending\")) | .databaseId"             | while read -r run_id; do
+          active_runs="$(
+            gh run list \
+              --workflow test-dubbing.yml \
+              --limit 20 \
+              --json databaseId,status,createdAt \
+              --jq '[.[] | select(.status == "in_progress" or .status == "queued" or .status == "pending")] | sort_by(.createdAt)'
+          )"
+          keep_id="$(printf '%s' "$active_runs" | jq -r 'if length == 0 then "" else .[-1].databaseId end')"
+          echo "Keeping newest active Movie Dubbing Test run: ${keep_id:-none}"
+
+          printf '%s' "$active_runs" \
+            | jq -r '.[].databaseId' \
+            | while read -r run_id; do
                 [ -n "$run_id" ] || continue
+                [ "$run_id" = "$keep_id" ] && continue
                 echo "Cancelling superseded Movie Dubbing Test run $run_id"
                 gh run cancel "$run_id" || true
               done
