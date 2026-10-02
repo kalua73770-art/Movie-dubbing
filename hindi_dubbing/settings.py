@@ -43,7 +43,9 @@ class Settings:
     # Keep transcription comfortably below the 30-minute diarization/timestamps limit.
     transcribe_chunk_seconds: int = int(os.getenv("TRANSCRIBE_CHUNK_SECONDS", "900"))
     transcribe_overlap_seconds: int = int(os.getenv("TRANSCRIBE_OVERLAP_SECONDS", "8"))
-    transcribe_workers: int = int(os.getenv("TRANSCRIBE_WORKERS", "2"))
+    transcribe_workers: int = int(os.getenv("TRANSCRIBE_WORKERS", "3"))
+    translation_workers: int = int(os.getenv("TRANSLATION_WORKERS", "3"))
+    tts_workers: int = int(os.getenv("TTS_WORKERS", "3"))
 
     # Video analysis is the most failure-prone/slowest optional stage.
     video_analysis_window_seconds: int = int(
@@ -83,7 +85,7 @@ class Settings:
     )
 
     translation_batch_chars: int = int(
-        os.getenv("TRANSLATION_BATCH_CHARS", "6000")
+        os.getenv("TRANSLATION_BATCH_CHARS", "12000")
     )
     translation_chars_per_second: float = float(
         os.getenv("TRANSLATION_CHARS_PER_SECOND", "12")
@@ -135,6 +137,10 @@ class Settings:
             )
         if self.transcribe_workers < 1:
             raise RuntimeError("TRANSCRIBE_WORKERS must be >= 1")
+        if self.translation_workers < 1:
+            raise RuntimeError("TRANSLATION_WORKERS must be >= 1")
+        if self.tts_workers < 1:
+            raise RuntimeError("TTS_WORKERS must be >= 1")
         if self.video_analysis_max_windows < 1:
             raise RuntimeError("VIDEO_ANALYSIS_MAX_WINDOWS must be >= 1")
         for name, value in {
