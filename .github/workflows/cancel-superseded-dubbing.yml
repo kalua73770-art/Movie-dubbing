@@ -18,7 +18,7 @@ jobs:
         run: |
           set -e
           active_runs="$(
-            gh run list \
+            gh --repo "$GITHUB_REPOSITORY" run list \
               --workflow test-dubbing.yml \
               --limit 20 \
               --json databaseId,status,createdAt \
@@ -33,5 +33,5 @@ jobs:
                 [ -n "$run_id" ] || continue
                 [ "$run_id" = "$keep_id" ] && continue
                 echo "Cancelling superseded Movie Dubbing Test run $run_id"
-                gh run cancel "$run_id" || true
+                gh --repo "$GITHUB_REPOSITORY" run cancel "$run_id" || true
               done
