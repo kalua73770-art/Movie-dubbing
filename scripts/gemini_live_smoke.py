@@ -21,12 +21,32 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         speech_wav = tmp_path / "speech.wav"
+        repo_root = Path(__file__).resolve().parents[1]
+        source_video = repo_root / "test" / "Input.mp4"
+        if not source_video.exists():
+            raise RuntimeError(f"Live smoke input video is missing: {source_video}")
+        # Use the repository's real speech-containing test clip instead of depending
+        # on espeak-ng being preinstalled on the GitHub-hosted runner.
         subprocess.run(
             [
-                "espeak-ng",
-                "-w",
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-t",
+                "30",
+                "-i",
+                str(source_video),
+                "-map",
+                "0:a:0",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
                 str(speech_wav),
-                "This is a short movie dubbing transcription test.",
             ],
             check=True,
             capture_output=True,
