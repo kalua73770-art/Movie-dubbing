@@ -22,8 +22,14 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg espeak-ng
+      - name: Check system tools
+        run: |
+          ffmpeg -version | head -n 1
+          if command -v espeak-ng >/dev/null 2>&1; then
+            espeak-ng --version | head -n 1
+          else
+            echo "espeak-ng not preinstalled; continuing because current tests do not require it."
+          fi
 
       - name: Install package
         run: python -m pip install --upgrade pip && python -m pip install -e .
