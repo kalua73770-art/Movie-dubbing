@@ -64,10 +64,8 @@ jobs:
           echo "Input video:"
           ls -lh "$VIDEO_PATH"
 
-      - name: Install FFmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+      - name: Check FFmpeg
+        run: ffmpeg -version | head -n 1
 
       - name: Set up Python
         uses: actions/setup-python@v6
