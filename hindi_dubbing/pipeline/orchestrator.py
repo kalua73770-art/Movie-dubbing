@@ -442,7 +442,10 @@ def _generate_tts_batch(
     """Try a batch on concrete model/key lanes without serially probing all lanes."""
     last = None
     tried = set()
-    max_attempts = min(4, max(1, len(lanes)))
+    max_attempts = min(
+        int(settings.tts_max_lane_attempts),
+        max(1, len(lanes)),
+    )
     offset = batch_index % max(1, len(lanes))
 
     for attempt_no in range(max_attempts):
@@ -451,6 +454,16 @@ def _generate_tts_batch(
             continue
         tried.add(lane)
         model, key_index = lane
+        started = time.monotonic()
+        log.info(
+            "TTS batch %d ATTEMPT %d/%d START model=%s key=#%d segments=%d",
+            batch_index + 1,
+            attempt_no + 1,
+            max_attempts,
+            model,
+            key_index + 1,
+            len(batch),
+        )
         try:
             paths = _generate_tts_batch_once(
                 gemini,
@@ -464,12 +477,18 @@ def _generate_tts_batch(
             )
             if paths is None:
                 raise RuntimeError("TTS batch audio did not contain enough silence boundaries")
+            elapsed = time.monotonic() - started
+            log.info(
+                "TTS batch %d ATTEMPT DONE elapsed=%.2fs model=%s key=#%d",
+                batch_index + 1, elapsed, model, key_index + 1,
+            )
             return paths, lane
         except Exception as exc:
             last = exc
+            elapsed = time.monotonic() - started
             log.warning(
-                "TTS batch %d lane failed model=%s key=#%d: %s",
-                batch_index + 1, model, key_index + 1, str(exc)[:800],
+                "TTS batch %d ATTEMPT FAILED elapsed=%.2fs model=%s key=#%d: %s",
+                batch_index + 1, elapsed, model, key_index + 1, str(exc)[:800],
             )
     raise RuntimeError(
         f"TTS batch {batch_index + 1} failed after {len(tried)} concrete lane attempt(s): {last}"
@@ -869,6 +888,14 @@ def run_pipeline(
         lane_guard = threading.Lock()
 
         def synthesize_batch(idx, batch):
+            batch_started = time.monotonic()
+            log.info(
+                "TTS batch %d START segments=%d chars=%d speakers=%d",
+                idx + 1,
+                len(batch),
+                sum(len(str(s.get("hindi", ""))) for s in batch),
+                len({str(s.get("speaker", "")) for s in batch}),
+            )
             last = None
             # Pick a different lane for each batch and move on immediately after
             # one bounded timeout/error. No nested all-key/all-model retry loop.
@@ -887,6 +914,10 @@ def run_pipeline(
                         last_at = lane_last_request.get(lane, 0.0)
                         wait = max(0.0, float(settings.tts_lane_cooldown_seconds) - (time.monotonic() - last_at))
                     if wait:
+                        log.info(
+                            "TTS batch %d waiting %.2fs for lane cooldown model=%s key=#%d",
+                            idx + 1, wait, model, key_index + 1,
+                        )
                         time.sleep(wait)
 
                     try:
@@ -897,6 +928,11 @@ def run_pipeline(
                         with lane_guard:
                             lane_last_request[lane] = time.monotonic()
                             lane_lock[lane] = False
+                    total_elapsed = time.monotonic() - batch_started
+                    log.info(
+                        "TTS batch %d SUCCESS total_elapsed=%.2fs lane=%s key=#%d",
+                        idx + 1, total_elapsed, used_lane[0], used_lane[1] + 1,
+                    )
                     return idx, list(zip(batch, paths)), used_lane
                 except Exception as exc:
                     last = exc
@@ -906,7 +942,39 @@ def run_pipeline(
                     )
                     continue
 
-            raise RuntimeError(f"TTS batch {idx + 1} failed on all available lanes: {last}")
+            total_elapsed = time.monotonic() - batch_started
+            log.error(
+                "TTS batch %d FAILED total_elapsed=%.2fs attempts=%d last_error=%s",
+                idx + 1, total_elapsed, len(order), str(last)[:1200],
+            )
+            # If the full batch cannot be generated quickly, do not silently
+            # churn through every model. Split it into smaller fallback batches
+            # so a single problematic request cannot stall the entire movie.
+            if len(batch) > 1:
+                midpoint = max(1, len(batch) // 2)
+                sub_batches = [batch[:midpoint], batch[midpoint:]]
+                fallback_items = []
+                for sub_index, sub_batch in enumerate(sub_batches):
+                    if not sub_batch:
+                        continue
+                    log.warning(
+                        "TTS batch %d falling back to smaller sub-batch %d/%d size=%d",
+                        idx + 1, sub_index + 1, len(sub_batches), len(sub_batch),
+                    )
+                    sub_paths, sub_lane = _generate_tts_batch(
+                        gemini,
+                        sub_batch,
+                        voice_map,
+                        segments_dir,
+                        log,
+                        idx,
+                        lanes,
+                    )
+                    fallback_items.extend(zip(sub_batch, sub_paths))
+                return idx, fallback_items, ("fallback", -1)
+            raise RuntimeError(
+                f"TTS batch {idx + 1} failed after {len(order)} bounded lane attempt(s): {last}"
+            )
 
         tts_results = [None] * len(segments)
         with ThreadPoolExecutor(max_workers=tts_workers) as pool:
