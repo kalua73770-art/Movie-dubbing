@@ -85,7 +85,13 @@ class Settings:
     )
     enable_antigravity: bool = _bool("ENABLE_ANTIGRAVITY", True)
     antigravity_timeout_ms: int = int(
-        os.getenv("ANTIGRAVITY_TIMEOUT_MS", "90000")
+        os.getenv("ANTIGRAVITY_TIMEOUT_MS", "30000")
+    )
+    antigravity_poll_interval_seconds: int = int(
+        os.getenv("ANTIGRAVITY_POLL_INTERVAL_SECONDS", "5")
+    )
+    antigravity_max_wait_seconds: int = int(
+        os.getenv("ANTIGRAVITY_MAX_WAIT_SECONDS", "300")
     )
     antigravity_window_seconds: int = int(
         os.getenv("ANTIGRAVITY_WINDOW_SECONDS", "240")
@@ -186,6 +192,10 @@ class Settings:
             raise RuntimeError("ANTIGRAVITY_MAX_KEYS must be >= 1")
         if self.antigravity_timeout_ms <= 0:
             raise RuntimeError("ANTIGRAVITY_TIMEOUT_MS must be > 0")
+        if self.antigravity_poll_interval_seconds < 1:
+            raise RuntimeError("ANTIGRAVITY_POLL_INTERVAL_SECONDS must be >= 1")
+        if self.antigravity_max_wait_seconds < 30:
+            raise RuntimeError("ANTIGRAVITY_MAX_WAIT_SECONDS must be >= 30")
         if self.antigravity_max_total_tokens < 1000:
             raise RuntimeError("ANTIGRAVITY_MAX_TOTAL_TOKENS must be >= 1000")
         if self.video_analysis_max_windows < 1:
