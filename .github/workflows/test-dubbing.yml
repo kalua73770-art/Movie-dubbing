@@ -31,13 +31,13 @@ jobs:
       GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
       GEMINI_TRANSCRIBE_MODEL: gemini-3.5-transcribe
       GEMINI_TEXT_MODELS: gemini-3.5-flash-lite,gemini-3.1-flash-lite
-      GEMINI_TTS_MODELS: gemini-3.8-flash-lite-tts,gemini-3.8-flash-tts,gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts
+      GEMINI_TTS_MODELS: gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts,gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts
       GEMINI_VIDEO_MODELS: gemini-3.6-flash,gemini-3.5-flash-lite
       AUDIO_STEM_PROVIDER: reconstruct
       GEMINI_HTTP_TIMEOUT_MS: "600000"
       GEMINI_TEXT_TIMEOUT_MS: "45000"
       GEMINI_TRANSCRIBE_TIMEOUT_MS: "600000"
-      GEMINI_TTS_TIMEOUT_MS: "60000"
+      GEMINI_TTS_TIMEOUT_MS: "50000"
       GEMINI_VIDEO_TIMEOUT_MS: "90000"
       TRANSCRIBE_CHUNK_SECONDS: "900"
       TRANSCRIBE_OVERLAP_SECONDS: "8"
@@ -45,7 +45,8 @@ jobs:
       TRANSLATION_WORKERS: "4"
       TTS_WORKERS: "4"
       TTS_BATCH_CHARS: "6000"
-      TTS_BATCH_MAX_SEGMENTS: "10"
+      TTS_LANE_COOLDOWN_SECONDS: "20"
+      TTS_BATCH_MAX_SEGMENTS: "12"
       TRANSLATION_BATCH_CHARS: "6000"
       VIDEO_ANALYSIS_MAX_WINDOWS: "6"
       VIDEO_ANALYSIS_WINDOW_SECONDS: "180"

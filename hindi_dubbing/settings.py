@@ -67,9 +67,10 @@ class Settings:
     transcribe_timeout_ms: int = int(
         os.getenv("GEMINI_TRANSCRIBE_TIMEOUT_MS", "600000")
     )
-    tts_timeout_ms: int = int(os.getenv("GEMINI_TTS_TIMEOUT_MS", "60000"))
+    tts_timeout_ms: int = int(os.getenv("GEMINI_TTS_TIMEOUT_MS", "50000"))
     tts_batch_chars: int = int(os.getenv("TTS_BATCH_CHARS", "6000"))
-    tts_batch_max_segments: int = int(os.getenv("TTS_BATCH_MAX_SEGMENTS", "10"))
+    tts_batch_max_segments: int = int(os.getenv("TTS_BATCH_MAX_SEGMENTS", "12"))
+    tts_lane_cooldown_seconds: int = int(os.getenv("TTS_LANE_COOLDOWN_SECONDS", "20"))
     video_timeout_ms: int = int(os.getenv("GEMINI_VIDEO_TIMEOUT_MS", "90000"))
     speaker_analysis_timeout_ms: int = int(
         os.getenv("GEMINI_SPEAKER_ANALYSIS_TIMEOUT_MS", "120000")

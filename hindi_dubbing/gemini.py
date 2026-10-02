@@ -858,6 +858,95 @@ class GeminiService:
 
         raise RuntimeError(f"TTS failed on all configured models/keys: {last}")
 
+    def tts_lanes(self) -> list[tuple[str, int]]:
+        """Return model/key lanes that survived TTS preflight.
+
+        Each lane is one concrete model+API-project pairing. The orchestrator
+        assigns batches to lanes instead of letting one batch serially probe
+        every key/model.
+        """
+        lanes = []
+        available = getattr(self, "_available_keys", {})
+        for model in self.s.tts_models:
+            supported = sorted(available.get(("tts", model), set()))
+            if supported:
+                for key_index in supported:
+                    lanes.append((model, key_index))
+            else:
+                for key_index in range(len(self.s.api_keys)):
+                    lanes.append((model, key_index))
+        return lanes
+
+    def tts_batch_on_lane(
+        self,
+        segments,
+        voices,
+        out_path: Path,
+        model: str,
+        key_index: int,
+        context_text: str = "",
+    ):
+        """Run exactly one TTS request on one known model/key lane.
+
+        No hidden fallback loop is allowed here. A failure is returned to the
+        scheduler immediately so it can move the batch to another lane.
+        """
+        if key_index < 0 or key_index >= len(self.s.api_keys):
+            raise ValueError(f"invalid TTS key index: {key_index}")
+
+        client = self._client(
+            self.s.api_keys[key_index],
+            timeout_ms=int(self.s.tts_timeout_ms),
+        )
+        speaker_ids = list(dict.fromkeys(str(s["speaker"]) for s in segments))
+        if len(speaker_ids) > 2:
+            raise ValueError("TTS batch has more than two speakers")
+
+        if len(speaker_ids) == 1:
+            prompt = " <short pause> ".join(str(s["hindi"]) for s in segments)
+            speech_config = [{"voice": voices[speaker_ids[0]]}]
+        else:
+            names = {speaker_ids[0]: "Speaker 1", speaker_ids[1]: "Speaker 2"}
+            prompt = "\n".join(
+                f'{names[str(s["speaker"])]}: {s["hindi"]}'
+                for s in segments
+            )
+            speech_config = {
+                "mode": "conversational",
+                "speakers": [
+                    {"speaker": "Speaker 1", "voice": voices[speaker_ids[0]]},
+                    {"speaker": "Speaker 2", "voice": voices[speaker_ids[1]]},
+                ],
+            }
+
+        if context_text:
+            prompt = (
+                "Locked continuity context for acting only. Do not add words or facts.\n"
+                + context_text[:3000]
+                + "\n\n"
+                + prompt
+            )
+
+        self.log.info(
+            "TTS lane request model=%s key=#%d segments=%d speakers=%d",
+            model, key_index + 1, len(segments), len(speaker_ids),
+        )
+
+        response = client.interactions.create(
+            model=model,
+            input=prompt,
+            response_format={"type": "audio"},
+            generation_config={"speech_config": speech_config},
+            timeout=max(1, int(self.s.tts_timeout_ms / 1000)),
+        )
+        data = getattr(getattr(response, "output_audio", None), "data", None)
+        if not data:
+            raise RuntimeError("empty TTS audio response")
+        raw = base64.b64decode(data) if isinstance(data, str) else bytes(data)
+        self._save_audio_data(raw, out_path)
+        return out_path
+
+
     def tts_batch(
         self,
         segments,
