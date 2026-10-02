@@ -872,26 +872,21 @@ class GeminiService:
             raise ValueError("Gemini TTS supports at most two speakers per request")
 
         content = []
-        if context_text:
-            content.append({
-                "type": "text",
-                "text": (
-                    "Locked continuity context for acting only. Do not speak this context "
-                    "and do not add words.\n" + context_text[:3000]
-                ),
-            })
 
         for index, seg in enumerate(segments):
             text = str(seg["hindi"])
             if len(speaker_ids) == 1 and index:
                 text = "<short pause> " + text
+            style = GeminiService._style(seg)
+            if context_text:
+                style += "; continuity: " + context_text[:500]
             content.append({
                 "type": "text",
                 "text": text,
                 "annotations": [{
                     "type": "speech_metadata",
                     "speaker": str(seg["speaker"]),
-                    "style": GeminiService._style(seg),
+                    "style": style,
                 }],
             })
 
