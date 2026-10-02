@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from google import genai
@@ -87,18 +88,60 @@ class AntigravityService:
         ]
         return [raw[i] for i in dict.fromkeys(picks)]
 
-    def call(self, prompt, images, previous_id):
+    def _wait_for_completion(self, client, interaction, key_index):
+        interaction_id = str(getattr(interaction, "id", "") or "")
+        if not interaction_id:
+            raise RuntimeError("Antigravity returned no interaction id")
+        started = time.monotonic()
+        deadline = started + int(self.s.antigravity_max_wait_seconds)
+        current = interaction
+        last_status = None
+        polls = 0
+        while True:
+            status = str(getattr(current, "status", "") or "").lower()
+            elapsed = time.monotonic() - started
+            if status != last_status or polls % 3 == 0:
+                self.log.info(
+                    "Antigravity POLL id=%s status=%s elapsed=%.1fs key=#%d",
+                    interaction_id, status or "unknown", elapsed, key_index + 1
+                )
+                last_status = status
+            if status in {
+                "completed", "failed", "cancelled", "expired",
+                "incomplete", "requires_action"
+            }:
+                return current
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Antigravity interaction {interaction_id} exceeded "
+                    f"{self.s.antigravity_max_wait_seconds}s wait budget"
+                )
+            time.sleep(max(1, int(self.s.antigravity_poll_interval_seconds)))
+            current = client.interactions.get(id=interaction_id)
+            polls += 1
+
+    def call(
+        self,
+        prompt,
+        images,
+        previous_id=None,
+        previous_environment=None,
+        preferred_key_index=None,
+    ):
         if not self.keys:
             raise RuntimeError("ANTIGRAVITY_API_KEYS is empty")
         order = list(range(len(self.keys)))
-        if self.active_key in order:
+        if preferred_key_index is not None and preferred_key_index in order:
+            order.remove(preferred_key_index)
+            order.insert(0, preferred_key_index)
+        elif self.active_key in order:
             order.remove(self.active_key)
             order.insert(0, self.active_key)
 
         last = None
         for key_index in order[:max(1, int(self.s.antigravity_max_keys))]:
+            client = self.client(self.keys[key_index])
             try:
-                client = self.client(self.keys[key_index])
                 inputs = [{"type": "text", "text": prompt}]
                 for image in images:
                     inputs.append({
@@ -107,29 +150,91 @@ class AntigravityService:
                         "mime_type": "image/jpeg",
                     })
 
+                if previous_id and not previous_environment:
+                    prior = client.interactions.get(id=previous_id)
+                    previous_environment = getattr(prior, "environment_id", None)
+
                 params = {
                     "agent": self.s.antigravity_agent,
                     "input": inputs,
-                    "environment": "remote",
+                    "environment": previous_environment or "remote",
                     "agent_config": {
                         "type": "antigravity",
                         "max_total_tokens": int(self.s.antigravity_max_total_tokens),
                     },
-                    "timeout": max(1, int(self.s.antigravity_timeout_ms / 1000)),
+                    "background": True,
                 }
                 if previous_id:
                     params["previous_interaction_id"] = previous_id
 
+                self.log.info(
+                    "Antigravity START key=#%d continuation=%s environment=%s",
+                    key_index + 1, bool(previous_id), previous_environment or "new-remote"
+                )
+                created_at = time.monotonic()
                 interaction = client.interactions.create(**params)
-                output = getattr(interaction, "output_text", "") or ""
+                self.log.info(
+                    "Antigravity CREATED id=%s env=%s create_elapsed=%.2fs key=#%d",
+                    getattr(interaction, "id", ""),
+                    getattr(interaction, "environment_id", ""),
+                    time.monotonic() - created_at,
+                    key_index + 1,
+                )
+
+                finished = self._wait_for_completion(client, interaction, key_index)
+                status = str(getattr(finished, "status", "") or "").lower()
+                environment_id = (
+                    getattr(finished, "environment_id", None)
+                    or getattr(interaction, "environment_id", None)
+                )
+
+                if status == "incomplete":
+                    self.log.warning(
+                        "Antigravity interaction %s incomplete; continuing once",
+                        getattr(finished, "id", ""),
+                    )
+                    continuation = client.interactions.create(
+                        agent=self.s.antigravity_agent,
+                        input="Continue the same continuity-analysis task and return the required final JSON only.",
+                        previous_interaction_id=str(getattr(finished, "id", "")),
+                        environment=environment_id,
+                        agent_config={
+                            "type": "antigravity",
+                            "max_total_tokens": int(self.s.antigravity_max_total_tokens),
+                        },
+                        background=True,
+                    )
+                    finished = self._wait_for_completion(client, continuation, key_index)
+                    status = str(getattr(finished, "status", "") or "").lower()
+                    environment_id = (
+                        getattr(finished, "environment_id", None)
+                        or environment_id
+                    )
+
+                if status != "completed":
+                    raise RuntimeError(
+                        f"Antigravity terminal status={status or 'unknown'} "
+                        f"interaction={getattr(finished, 'id', '')}"
+                    )
+
+                output = getattr(finished, "output_text", "") or ""
                 if not output:
                     raise RuntimeError("Antigravity returned empty output")
 
                 self.active_key = key_index
-                return self.parse_json(output), str(getattr(interaction, "id", "") or ""), key_index
+                return (
+                    self.parse_json(output),
+                    str(getattr(finished, "id", "") or ""),
+                    str(environment_id or ""),
+                    key_index,
+                )
             except Exception as exc:
                 last = exc
-                self.log.warning("Antigravity key #%d failed: %s", key_index + 1, str(exc)[:900])
+                self.log.warning(
+                    "Antigravity key #%d failed: %s",
+                    key_index + 1, str(exc)[:1200]
+                )
+                continue
 
         raise RuntimeError(f"Antigravity failed on available keys: {last}")
 
@@ -149,6 +254,12 @@ class AntigravityService:
             "decisions": [],
         }
         previous_id = brain.interaction_id("antigravity")
+        previous_environment = brain.interaction_id("antigravity_env")
+        previous_key_raw = brain.interaction_id("antigravity_key")
+        try:
+            previous_key = int(previous_key_raw) if previous_key_raw is not None else None
+        except (TypeError, ValueError):
+            previous_key = None
 
         for index, (start, end) in enumerate(windows):
             current = [
@@ -196,15 +307,20 @@ class AntigravityService:
                 "\n\nTranscript:\n" + transcript
             )
 
-            data, interaction_id, key_index = self.call(
+            data, interaction_id, environment_id, key_index = self.call(
                 prompt,
                 images,
-                previous_id,
+                previous_id=previous_id,
+                previous_environment=previous_environment,
+                preferred_key_index=previous_key,
             )
             if interaction_id:
                 previous_id = interaction_id
                 brain.set_interaction_id("antigravity", interaction_id)
+                brain.set_interaction_id("antigravity_env", environment_id)
                 brain.set_interaction_id("antigravity_key", str(key_index))
+                previous_environment = environment_id
+                previous_key = key_index
 
             accepted = brain.apply_agent_update(
                 data,
