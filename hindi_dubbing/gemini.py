@@ -223,11 +223,52 @@ class GeminiService:
                 self.log.warning("No preflight-ready models for task=%s", task)
         return health
 
+    def start_context_interaction(
+        self,
+        context_text: str,
+        preferred_key_index: int | None = None,
+        preferred_model_index: int | None = None,
+    ) -> tuple[str, str]:
+        models = list(self.s.text_models)
+        if models and preferred_model_index is not None:
+            offset = preferred_model_index % len(models)
+            models = models[offset:] + models[:offset]
+        last = None
+        for model in models:
+            try:
+                def action(client, _, __):
+                    interaction = client.interactions.create(
+                        model=model,
+                        input=context_text,
+                        timeout=max(1, int(self.s.text_timeout_ms / 1000)),
+                    )
+                    interaction_id = getattr(interaction, "id", None)
+                    if not interaction_id:
+                        raise RuntimeError("context interaction returned no id")
+                    return str(interaction_id)
+
+                interaction_id, key_index = self._attempt(
+                    task="context",
+                    model=model,
+                    action=action,
+                    preferred_key_index=preferred_key_index,
+                )
+                self.log.info(
+                    "Movie Brain context seed model=%s key=#%d id=%s",
+                    model, key_index + 1, interaction_id,
+                )
+                return interaction_id, model
+            except Exception as exc:
+                last = exc
+                self.log.warning("Context seed model=%s failed: %s", model, str(exc)[:700])
+        raise RuntimeError(f"Movie Brain context seed failed: {last}")
+
     def generate_text(
         self,
         prompt,
         preferred_key_index: int | None = None,
         preferred_model_index: int | None = None,
+        previous_interaction_id: str | None = None,
     ):
         last: Exception | None = None
         models = list(self.s.text_models)
@@ -239,16 +280,21 @@ class GeminiService:
                 self.log.info("Text model=%s", model)
 
                 def action(client, _, __):
-                    response = client.models.generate_content(
-                        model=model,
-                        contents=prompt,
-                        config={
-                            "http_options": {
-                                "timeout": int(self.s.text_timeout_ms)
-                            }
-                        },
-                    )
-                    text = getattr(response, "text", None)
+                    if previous_interaction_id:
+                        response = client.interactions.create(
+                            model=model,
+                            input=prompt,
+                            previous_interaction_id=previous_interaction_id,
+                            timeout=max(1, int(self.s.text_timeout_ms / 1000)),
+                        )
+                        text = getattr(response, "output_text", None) or getattr(response, "text", None)
+                    else:
+                        response = client.models.generate_content(
+                            model=model,
+                            contents=prompt,
+                            config={"http_options": {"timeout": int(self.s.text_timeout_ms)}},
+                        )
+                        text = getattr(response, "text", None)
                     if not text:
                         raise RuntimeError("empty text response")
                     return text
@@ -436,11 +482,13 @@ class GeminiService:
             "and expletives natural to the scene. Do not add or remove meaning. "
             "Return exactly one line per input in the format ID|||Hindi text.\n\n"
             + "\n".join(lines)
+            + "\n\n" + (context_text or "")
         )
         output, model = self.generate_text(
             prompt,
             preferred_key_index=preferred_key_index,
             preferred_model_index=preferred_model_index,
+            previous_interaction_id=previous_interaction_id,
         )
         result = {}
         for line in output.splitlines():
@@ -512,7 +560,11 @@ class GeminiService:
         self.log.warning("Speaker analysis failed on all models/keys: %s", last)
         return {"character_gender": "ambiguous", "confidence": 0.0, "model": None}
 
-    def choose_voices(self, speaker_profiles: dict[str, dict]) -> dict[str, str]:
+    def choose_voices(
+        self,
+        speaker_profiles: dict[str, dict],
+        locked_voices: dict[str, str] | None = None,
+    ) -> dict[str, str]:
         # Use a broad pool so distinct main characters do not collapse onto the
         # same prebuilt voice merely because the first few configured voices filled up.
         featured = {
@@ -568,7 +620,11 @@ class GeminiService:
                     pools[gender] = configured[:]
 
         result = {}
-        used = set()
+        locked_voices = locked_voices or {}
+        used = set(locked_voices.values())
+        for character_id, voice_id in locked_voices.items():
+            if character_id in speaker_profiles and voice_id in configured:
+                result[character_id] = voice_id
         # Main/declared characters first: more important characters get unique voices.
         ordered = sorted(
             speaker_profiles.items(),
@@ -580,6 +636,8 @@ class GeminiService:
         counters = {"male": 0, "female": 0, "neutral": 0}
 
         for character_id, profile in ordered:
+            if character_id in result:
+                continue
             gender = str(profile.get("gender", "ambiguous")).lower()
             gender = gender if gender in {"male", "female", "neutral"} else "neutral"
             pool = pools[gender]
@@ -606,6 +664,8 @@ class GeminiService:
         segments,
         preferred_key_index: int | None = None,
         preferred_model_index: int | None = None,
+        context_text: str = "",
+        previous_interaction_id: str | None = None,
     ):
         lines = []
         for s in segments:
@@ -710,6 +770,8 @@ class GeminiService:
         out_path: Path,
         preferred_key_index: int | None = None,
         preferred_model_index: int | None = None,
+        context_text: str = "",
+        previous_interaction_id: str | None = None,
     ):
         last: Exception | None = None
 
@@ -725,23 +787,31 @@ class GeminiService:
                     "TTS segment=%s model=%s key=#%d voice=%s",
                     segment["id"], model, key_index + 1, voice,
                 )
-                interaction = client.interactions.create(
-                    model=model,
-                    input=[{
+                tts_text = (
+                    "Locked character context:\n" + (context_text or "No extra confirmed context.") +
+                    "\n\nPerform this exact Hindi line as spoken dialogue. Do not add words.\n" +
+                    segment["hindi"]
+                )
+                interaction_kwargs = {
+                    "model": model,
+                    "input": [{
                         "type": "user_input",
                         "content": [{
                             "type": "text",
-                            "text": segment["hindi"],
+                            "text": tts_text,
                             "annotations": [{
                                 "type": "speech_metadata",
                                 "style": style,
                             }],
                         }],
                     }],
-                    response_format={"type": "audio"},
-                    generation_config={"speech_config": [{"voice": voice}]},
-                    timeout=max(1, int(self.s.tts_timeout_ms / 1000)),
-                )
+                    "response_format": {"type": "audio"},
+                    "generation_config": {"speech_config": [{"voice": voice}]},
+                    "timeout": max(1, int(self.s.tts_timeout_ms / 1000)),
+                }
+                if previous_interaction_id:
+                    interaction_kwargs["previous_interaction_id"] = previous_interaction_id
+                interaction = client.interactions.create(**interaction_kwargs)
                 data = getattr(getattr(interaction, "output_audio", None), "data", None)
                 if not data:
                     raise RuntimeError("empty TTS audio response")

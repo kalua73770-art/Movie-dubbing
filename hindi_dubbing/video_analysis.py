@@ -51,14 +51,15 @@ class VideoAnalyzer:
         return json.loads(candidate)
 
     def _clients(self):
-        for key_no, key in enumerate(self.s.api_keys, 1):
+        max_keys = min(max(1, int(self.s.video_max_keys_per_model)), len(self.s.api_keys))
+        for key_no, key in enumerate(self.s.api_keys[:max_keys], 1):
             yield (
                 key_no,
                 key,
                 genai.Client(
                     api_key=key,
                     http_options=types.HttpOptions(
-                        timeout=int(self.s.gemini_http_timeout_ms),
+                        timeout=int(self.s.video_timeout_ms),
                     ),
                 ),
             )
@@ -122,7 +123,8 @@ class VideoAnalyzer:
             "whisper|other.\n"
             "pace: very_slow|slow|normal|fast|very_fast. intensity: soft|normal|strong|shout.\n"
             "Each character must contain character_id, name, gender, age_group, "
-            "voice_profile, personality.\n"
+            "voice_profile, personality. Do not invent unsupported facts; use unknown/ambiguous when evidence is weak.\n"
+            "Also return scene_summary, relationships and glossary when supported.\n"
             f"Existing character registry:\n{registry_text}\n"
             f"Timed transcript to annotate:\n{transcript}"
         )
@@ -151,6 +153,9 @@ class VideoAnalyzer:
         return {
             "characters": data.get("characters") or [],
             "annotations": data.get("annotations") or [],
+            "scene_summary": str(data.get("scene_summary") or "").strip(),
+            "relationships": data.get("relationships") or [],
+            "glossary": data.get("glossary") or {},
         }
 
     @staticmethod
@@ -187,7 +192,13 @@ class VideoAnalyzer:
             default=0.0,
         )
         if duration <= 0:
-            return [], {}
+            return {
+                "annotations": [],
+                "registry": {},
+                "scene_summaries": [],
+                "relationships": [],
+                "glossary": {},
+            }
 
         window_len = max(30, int(self.s.video_analysis_window_seconds))
         windows = []
@@ -226,6 +237,9 @@ class VideoAnalyzer:
                     annotations = []
                     registry = {}
                     successful_windows = 0
+                    scene_summaries = []
+                    relationships = []
+                    glossary = {}
 
                     for window_start, window_end in windows:
                         window_segments = [
@@ -278,6 +292,16 @@ class VideoAnalyzer:
                             a for a in data["annotations"]
                             if a.get("segment_id")
                         )
+                        if data.get("scene_summary"):
+                            scene_summaries.append({
+                                "start": window_start,
+                                "end": window_end,
+                                "summary": data["scene_summary"],
+                            })
+                        relationships.extend(data.get("relationships") or [])
+                        for k, value in (data.get("glossary") or {}).items():
+                            if k not in glossary and value:
+                                glossary[str(k)] = str(value)
 
                     if successful_windows:
                         self.log.info(
@@ -290,7 +314,13 @@ class VideoAnalyzer:
                             len(annotations),
                             len(registry),
                         )
-                        return annotations, registry
+                        return {
+                            "annotations": annotations,
+                            "registry": registry,
+                            "scene_summaries": scene_summaries,
+                            "relationships": relationships,
+                            "glossary": glossary,
+                        }
 
                     raise RuntimeError(
                         f"No video analysis windows completed for model={model}"

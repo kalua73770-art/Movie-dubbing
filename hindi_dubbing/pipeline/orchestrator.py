@@ -23,6 +23,7 @@ from hindi_dubbing.core.audio.processor import (
 )
 from hindi_dubbing.core.mixing.mixer import mix_final
 from hindi_dubbing.gemini import GeminiService
+from hindi_dubbing.movie_brain import MovieBrain
 from hindi_dubbing.settings import settings
 from hindi_dubbing.video_analysis import VideoAnalyzer
 
@@ -228,6 +229,8 @@ def _generate_segment_audio(
     log,
     preferred_key_index: int | None = None,
     preferred_model_index: int | None = None,
+    context_text: str = "",
+    previous_interaction_id: str | None = None,
 ):
     preferred = max(0.25, float(segment["end"]) - float(segment["start"]))
     next_start = float(segment.get("next_start", segment["start"] + preferred))
@@ -249,6 +252,8 @@ def _generate_segment_audio(
             raw,
             preferred_key_index=preferred_key_index,
             preferred_model_index=preferred_model_index,
+            context_text=context_text,
+            previous_interaction_id=previous_interaction_id,
         )
 
         trimmed = segment_dir / f'{segment["id"]}_attempt{attempt}_trim.wav'
@@ -344,6 +349,7 @@ def run_pipeline(
 
     log = _logger(work)
     manifest = work / "project.json"
+    brain = MovieBrain(work / "movie_brain.json").load()
     state = {
         "job_id": job_id,
         "status": "running",
@@ -353,6 +359,7 @@ def run_pipeline(
         "segments": [],
         "characters": {},
         "models": {},
+        "brain": brain.snapshot(),
     }
     _state(manifest, state)
 
@@ -491,10 +498,20 @@ def run_pipeline(
                 "Using bounded Gemini video understanding for character/acting analysis",
             )
             try:
-                annotations, registry = VideoAnalyzer(
+                video_result = VideoAnalyzer(
                     settings,
                     log,
                 ).analyze(source_video, segments)
+                annotations = video_result["annotations"]
+                registry = video_result["registry"]
+                for scene in video_result.get("scene_summaries", []):
+                    brain.add_scene_summary(
+                        scene.get("start", 0),
+                        scene.get("end", 0),
+                        scene.get("summary", ""),
+                    )
+                brain.add_relationships(video_result.get("relationships", []))
+                brain.add_glossary(video_result.get("glossary", {}))
                 _merge_video_annotations(
                     segments,
                     annotations,
@@ -518,6 +535,7 @@ def run_pipeline(
         fallback_registry = _build_fallback_registry(segments)
         for cid, fallback in fallback_registry.items():
             registry.setdefault(cid, fallback)
+        brain.merge_characters(registry)
 
         # Rank characters by actual screen/dialogue presence so main characters
         # receive distinct voices before minor/background speakers.
@@ -536,9 +554,15 @@ def run_pipeline(
                 score["count"] * 2.0 + score["duration"]
             )
 
-        voice_map = gemini.choose_voices(registry)
+        voice_map = gemini.choose_voices(
+            registry,
+            locked_voices=brain.data.get("voice_locks", {}),
+        )
+        voice_map = brain.lock_voices(voice_map)
         for segment in segments:
             segment["voice"] = voice_map[segment["character_id"]]
+        brain.add_decision("Character voice assignments stay locked once established.")
+        brain.save()
 
         state["characters"] = {
             cid: {
@@ -547,9 +571,25 @@ def run_pipeline(
             }
             for cid in voice_map
         }
+        state["brain"] = brain.snapshot()
         report(
             "video",
             f"Locked {len(voice_map)} character voices and acting profiles",
+        )
+
+        context_id = brain.interaction_id("seed")
+        if not context_id:
+            context_id, context_model = gemini.start_context_interaction(
+                brain.seed_prompt(),
+                preferred_key_index=0,
+                preferred_model_index=0,
+            )
+            brain.set_interaction_id("seed", context_id)
+            brain.set_interaction_id("seed_model", context_model)
+            brain.save()
+        report(
+            "context",
+            "Movie Brain context seed ready for parallel downstream calls",
         )
 
         report(
@@ -576,6 +616,8 @@ def run_pipeline(
                 batch,
                 preferred_key_index=batch_index % max(1, len(settings.api_keys)),
                 preferred_model_index=batch_index % max(1, len(settings.text_models)),
+                context_text=brain.context_for_segments(batch),
+                previous_interaction_id=context_id,
             )
             return batch_index, translated
 
@@ -627,6 +669,8 @@ def run_pipeline(
                 log,
                 preferred_key_index=idx % max(1, len(settings.api_keys)),
                 preferred_model_index=idx % max(1, len(settings.tts_models)),
+                context_text=brain.character_context(segment["character_id"]),
+                previous_interaction_id=context_id,
             )
             return idx, audio_path
 
@@ -691,6 +735,8 @@ def run_pipeline(
         )
 
         state["segments"] = segments
+        state["brain"] = brain.snapshot()
+        brain.save()
         state["status"] = "completed"
         state["stage"] = "done"
         _state(manifest, state)

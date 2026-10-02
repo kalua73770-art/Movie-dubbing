@@ -43,9 +43,9 @@ class Settings:
     # Keep transcription comfortably below the 30-minute diarization/timestamps limit.
     transcribe_chunk_seconds: int = int(os.getenv("TRANSCRIBE_CHUNK_SECONDS", "900"))
     transcribe_overlap_seconds: int = int(os.getenv("TRANSCRIBE_OVERLAP_SECONDS", "8"))
-    transcribe_workers: int = int(os.getenv("TRANSCRIBE_WORKERS", "3"))
-    translation_workers: int = int(os.getenv("TRANSLATION_WORKERS", "3"))
-    tts_workers: int = int(os.getenv("TTS_WORKERS", "3"))
+    transcribe_workers: int = int(os.getenv("TRANSCRIBE_WORKERS", "4"))
+    translation_workers: int = int(os.getenv("TRANSLATION_WORKERS", "4"))
+    tts_workers: int = int(os.getenv("TTS_WORKERS", "4"))
 
     # Video analysis is the most failure-prone/slowest optional stage.
     video_analysis_window_seconds: int = int(
@@ -55,7 +55,7 @@ class Settings:
         os.getenv("VIDEO_ANALYSIS_MAX_WINDOWS", "6")
     )
     video_max_keys_per_model: int = int(
-        os.getenv("VIDEO_MAX_KEYS_PER_MODEL", "1")
+        os.getenv("VIDEO_MAX_KEYS_PER_MODEL", "2")
     )
     enable_video_analysis: bool = _bool("ENABLE_VIDEO_ANALYSIS", True)
 
@@ -63,12 +63,12 @@ class Settings:
     gemini_http_timeout_ms: int = int(
         os.getenv("GEMINI_HTTP_TIMEOUT_MS", "600000")
     )
-    text_timeout_ms: int = int(os.getenv("GEMINI_TEXT_TIMEOUT_MS", "120000"))
+    text_timeout_ms: int = int(os.getenv("GEMINI_TEXT_TIMEOUT_MS", "45000"))
     transcribe_timeout_ms: int = int(
         os.getenv("GEMINI_TRANSCRIBE_TIMEOUT_MS", "600000")
     )
-    tts_timeout_ms: int = int(os.getenv("GEMINI_TTS_TIMEOUT_MS", "180000"))
-    video_timeout_ms: int = int(os.getenv("GEMINI_VIDEO_TIMEOUT_MS", "600000"))
+    tts_timeout_ms: int = int(os.getenv("GEMINI_TTS_TIMEOUT_MS", "60000"))
+    video_timeout_ms: int = int(os.getenv("GEMINI_VIDEO_TIMEOUT_MS", "90000"))
     speaker_analysis_timeout_ms: int = int(
         os.getenv("GEMINI_SPEAKER_ANALYSIS_TIMEOUT_MS", "120000")
     )

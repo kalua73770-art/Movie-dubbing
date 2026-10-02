@@ -35,19 +35,19 @@ jobs:
       GEMINI_VIDEO_MODELS: gemini-3.6-flash,gemini-3.5-flash-lite
       AUDIO_STEM_PROVIDER: reconstruct
       GEMINI_HTTP_TIMEOUT_MS: "600000"
-      GEMINI_TEXT_TIMEOUT_MS: "120000"
+      GEMINI_TEXT_TIMEOUT_MS: "45000"
       GEMINI_TRANSCRIBE_TIMEOUT_MS: "600000"
-      GEMINI_TTS_TIMEOUT_MS: "120000"
-      GEMINI_VIDEO_TIMEOUT_MS: "600000"
+      GEMINI_TTS_TIMEOUT_MS: "60000"
+      GEMINI_VIDEO_TIMEOUT_MS: "90000"
       TRANSCRIBE_CHUNK_SECONDS: "900"
       TRANSCRIBE_OVERLAP_SECONDS: "8"
-      TRANSCRIBE_WORKERS: "3"
-      TRANSLATION_WORKERS: "3"
-      TTS_WORKERS: "3"
+      TRANSCRIBE_WORKERS: "4"
+      TRANSLATION_WORKERS: "4"
+      TTS_WORKERS: "4"
       TRANSLATION_BATCH_CHARS: "12000"
       VIDEO_ANALYSIS_MAX_WINDOWS: "6"
       VIDEO_ANALYSIS_WINDOW_SECONDS: "180"
-      VIDEO_MAX_KEYS_PER_MODEL: "1"
+      VIDEO_MAX_KEYS_PER_MODEL: "2"
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -92,7 +92,7 @@ jobs:
         run: |
           python -m compileall -q hindi_dubbing
           python -c "from google import genai; from google.genai import types; print('google-genai import OK'); print(types.HttpOptions(timeout=120000))"
-          python -c "from hindi_dubbing.settings import settings; from hindi_dubbing.gemini import GeminiService; from hindi_dubbing.video_analysis import VideoAnalyzer; from hindi_dubbing.background_reconstruction import reconstruct_background; from hindi_dubbing.pipeline.orchestrator import run_pipeline; print('pipeline imports OK')"
+          python -c "from hindi_dubbing.settings import settings; from hindi_dubbing.gemini import GeminiService; from hindi_dubbing.video_analysis import VideoAnalyzer; from hindi_dubbing.movie_brain import MovieBrain; from hindi_dubbing.background_reconstruction import reconstruct_background; from hindi_dubbing.pipeline.orchestrator import run_pipeline; print('pipeline imports OK')"
 
       - name: Run movie dubbing
         run: |
