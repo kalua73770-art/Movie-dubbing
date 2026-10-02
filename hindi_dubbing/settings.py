@@ -67,10 +67,11 @@ class Settings:
     transcribe_timeout_ms: int = int(
         os.getenv("GEMINI_TRANSCRIBE_TIMEOUT_MS", "600000")
     )
-    tts_timeout_ms: int = int(os.getenv("GEMINI_TTS_TIMEOUT_MS", "50000"))
+    tts_timeout_ms: int = int(os.getenv("GEMINI_TTS_TIMEOUT_MS", "45000"))
     tts_batch_chars: int = int(os.getenv("TTS_BATCH_CHARS", "6000"))
     tts_batch_max_segments: int = int(os.getenv("TTS_BATCH_MAX_SEGMENTS", "12"))
     tts_lane_cooldown_seconds: int = int(os.getenv("TTS_LANE_COOLDOWN_SECONDS", "20"))
+    tts_max_lane_attempts: int = int(os.getenv("TTS_MAX_LANE_ATTEMPTS", "2"))
 
     antigravity_api_keys: list[str] = field(
         default_factory=lambda: _csv(
@@ -175,6 +176,8 @@ class Settings:
             raise RuntimeError("TTS_BATCH_CHARS must be >= 500")
         if self.tts_batch_max_segments < 2:
             raise RuntimeError("TTS_BATCH_MAX_SEGMENTS must be >= 2")
+        if self.tts_max_lane_attempts < 1:
+            raise RuntimeError("TTS_MAX_LANE_ATTEMPTS must be >= 1")
         if self.antigravity_window_seconds < 30:
             raise RuntimeError("ANTIGRAVITY_WINDOW_SECONDS must be >= 30")
         if self.antigravity_max_windows < 1:
