@@ -917,15 +917,16 @@ class GeminiService:
         """
         lanes = []
         available = getattr(self, "_available_keys", {})
-        for model in self.s.tts_models:
-            supported = sorted(available.get(("tts", model), set()))
-            if supported:
-                for key_index in supported:
-                    lanes.append((model, key_index))
-            else:
-                for key_index in range(len(self.s.api_keys)):
-                    lanes.append((model, key_index))
-        return lanes
+        # Interleave models first, then rotate projects/keys. This means
+        # consecutive batches use different TTS models instead of hammering
+        # every key of one model before trying the next model.
+        model_key_pairs = []
+        for key_index in range(len(self.s.api_keys)):
+            for model in self.s.tts_models:
+                supported = available.get(("tts", model), set())
+                if not supported or key_index in supported:
+                    model_key_pairs.append((model, key_index))
+        return model_key_pairs
 
     def tts_batch_on_lane(
         self,
@@ -948,8 +949,9 @@ class GeminiService:
             voices,
             context_text=context_text,
         )
+        started = time.monotonic()
         self.log.info(
-            "TTS lane request model=%s key=#%d segments=%d speakers=%d",
+            "TTS lane START model=%s key=#%d segments=%d speakers=%d",
             model,
             key_index + 1,
             len(segments),
@@ -967,6 +969,10 @@ class GeminiService:
             raise RuntimeError("empty TTS audio response")
         raw = base64.b64decode(data) if isinstance(data, str) else bytes(data)
         self._save_audio_data(raw, out_path)
+        self.log.info(
+            "TTS lane DONE model=%s key=#%d elapsed=%.2fs output=%s",
+            model, key_index + 1, time.monotonic() - started, out_path.name,
+        )
         return out_path
 
 
