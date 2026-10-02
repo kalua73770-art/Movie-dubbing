@@ -17,6 +17,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
+          # Let the push-triggered Movie Dubbing Test run register before
+          # determining which active run is newest.
+          sleep 20
           active_runs="$(
             gh --repo "$GITHUB_REPOSITORY" run list \
               --workflow test-dubbing.yml \
