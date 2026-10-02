@@ -103,6 +103,19 @@ class MovieBrain:
             except Exception:
                 pass
 
+    def lock_voices(self, proposed):
+        locks = self.data.setdefault("voice_locks", {})
+        effective = {}
+        for cid, voice in (proposed or {}).items():
+            cid = str(cid)
+            existing = locks.get(cid)
+            if existing:
+                effective[cid] = existing
+            else:
+                locks[cid] = str(voice)
+                effective[cid] = str(voice)
+        return effective
+
     def apply_agent_update(
         self,
         update: dict,
