@@ -714,6 +714,10 @@ class GeminiService:
             "Rewrite each source dialogue into natural spoken Hindi for a professional movie/anime dub. "
             "Preserve ALL meaning, intent, names, relationships, reactions and important details. "
             "Do not omit half of a sentence just to make it short. "
+            "Write Hindi words in Devanagari script, not Roman/Hinglish transliteration, so the TTS engine "
+            "uses natural Indian-Hindi pronunciation. Transliterate ordinary English words used as Hindi speech "
+            "(for example detective, doctor, sir) into Devanagari when they are not proper names or acronyms. "
+            "Keep proper names, product names and acronyms such as USR in their natural form. "
             "Aim for the requested spoken duration and word-count band. "
             "For longer lines, use natural Hindi phrasing, connectives or a brief natural reaction when "
             "needed, but never add unrelated information. For short lines, stay concise. "
@@ -765,6 +769,7 @@ class GeminiService:
         prompt = (
             f"{direction} "
             f"Target spoken duration is about {target:.2f}s and current TTS duration is {observed_duration:.2f}s. "
+            "Write Hindi in Devanagari script for natural Indian-Hindi pronunciation. "
             "Return only the revised Hindi sentence.\n\n"
             + segment["hindi"]
         )
@@ -820,7 +825,10 @@ class GeminiService:
                 )
                 tts_text = (
                     "Locked character context:\n" + (context_text or "No extra confirmed context.") +
-                    "\n\nPerform this exact Hindi line as spoken dialogue. Do not add words.\n" +
+                    "\n\nPerform this exact Hindi line as natural Indian Hindi spoken dialogue. "
+                    "Treat Devanagari text as Hindi and use Indian-Hindi phonetics, rhythm and stress; "
+                    "do not read Hindi words with an English accent or Roman-English pronunciation. "
+                    "Do not translate, paraphrase, shorten or add words.\n" +
                     segment["hindi"]
                 )
                 interaction_kwargs = {
