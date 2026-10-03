@@ -377,7 +377,7 @@ class GeminiService:
     def transcribe(self, audio_path: Path, preferred_key_index: int | None = None):
         model = self.s.transcribe_model
 
-        def action(client, key_index, _):
+        def action(client, key_index, key):
             self.log.info(
                 "Transcribing %s model=%s key=#%d",
                 audio_path.name,
@@ -386,6 +386,11 @@ class GeminiService:
             )
             audio_file = client.files.upload(file=str(audio_path))
             try:
+                # Gemini Interactions background execution is essential here:
+                # synchronous transcription can keep one HTTP request open until
+                # the GitHub job timeout instead of honoring the intended request
+                # timeout. Background mode returns an interaction ID immediately,
+                # then we poll with a bounded wall-clock budget.
                 interaction = client.interactions.create(
                     model=model,
                     input=[{
@@ -402,8 +407,67 @@ class GeminiService:
                             }
                         }
                     },
+                    background=True,
                     timeout=max(1, int(self.s.transcribe_timeout_ms / 1000)),
                 )
+                interaction_id = str(getattr(interaction, "id", "") or "")
+                if not interaction_id:
+                    raise RuntimeError("Gemini Transcribe background interaction returned no id")
+
+                self.log.info(
+                    "Transcription CREATED id=%s model=%s key=#%d",
+                    interaction_id,
+                    model,
+                    key_index + 1,
+                )
+                started = time.monotonic()
+                deadline = started + int(self.s.transcribe_max_wait_seconds)
+                current = interaction
+                polls = 0
+                terminal = {
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "expired",
+                    "incomplete",
+                    "requires_action",
+                }
+                last_status = None
+
+                while True:
+                    status = str(getattr(current, "status", "") or "").lower()
+                    elapsed = time.monotonic() - started
+                    if status != last_status or polls % 3 == 0:
+                        self.log.info(
+                            "Transcription POLL id=%s status=%s elapsed=%.1fs key=#%d",
+                            interaction_id,
+                            status or "unknown",
+                            elapsed,
+                            key_index + 1,
+                        )
+                        last_status = status
+
+                    if status in terminal:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Gemini Transcribe interaction {interaction_id} exceeded "
+                            f"{self.s.transcribe_max_wait_seconds}s wait budget"
+                        )
+                    time.sleep(max(1, int(self.s.transcribe_poll_interval_seconds)))
+                    current = client.interactions.get(id=interaction_id)
+                    polls += 1
+
+                interaction = current
+                status = str(getattr(interaction, "status", "") or "").lower()
+                if status != "completed":
+                    error = getattr(interaction, "error", None)
+                    detail = f" error={error}" if error else ""
+                    raise RuntimeError(
+                        f"Gemini Transcribe terminal status={status or 'unknown'} "
+                        f"interaction={interaction_id}.{detail}"
+                    )
+
             finally:
                 try:
                     client.files.delete(name=audio_file.name)

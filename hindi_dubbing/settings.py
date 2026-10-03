@@ -67,6 +67,13 @@ class Settings:
     transcribe_timeout_ms: int = int(
         os.getenv("GEMINI_TRANSCRIBE_TIMEOUT_MS", "600000")
     )
+    # Background transcription avoids holding one HTTP request open for hours.
+    transcribe_poll_interval_seconds: int = int(
+        os.getenv("GEMINI_TRANSCRIBE_POLL_INTERVAL_SECONDS", "5")
+    )
+    transcribe_max_wait_seconds: int = int(
+        os.getenv("GEMINI_TRANSCRIBE_MAX_WAIT_SECONDS", "1800")
+    )
     tts_timeout_ms: int = int(os.getenv("GEMINI_TTS_TIMEOUT_MS", "45000"))
     tts_batch_chars: int = int(os.getenv("TTS_BATCH_CHARS", "6000"))
     tts_batch_max_segments: int = int(os.getenv("TTS_BATCH_MAX_SEGMENTS", "12"))
@@ -178,6 +185,10 @@ class Settings:
             )
         if self.transcribe_workers < 1:
             raise RuntimeError("TRANSCRIBE_WORKERS must be >= 1")
+        if self.transcribe_poll_interval_seconds < 1:
+            raise RuntimeError("GEMINI_TRANSCRIBE_POLL_INTERVAL_SECONDS must be >= 1")
+        if self.transcribe_max_wait_seconds < 30:
+            raise RuntimeError("GEMINI_TRANSCRIBE_MAX_WAIT_SECONDS must be >= 30")
         if self.translation_workers < 1:
             raise RuntimeError("TRANSLATION_WORKERS must be >= 1")
         if self.tts_workers < 1:

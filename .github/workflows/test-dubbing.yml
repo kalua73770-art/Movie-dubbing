@@ -32,7 +32,7 @@ jobs:
       ANTIGRAVITY_API_KEYS: ${{ secrets.ANTIGRAVITY_API_KEYS || secrets.GEMINI_API_KEYS }}
       GEMINI_TRANSCRIBE_MODEL: gemini-3.5-transcribe
       GEMINI_TEXT_MODELS: gemini-3.5-flash-lite,gemini-3.1-flash-lite
-      GEMINI_TTS_MODELS: gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts,gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts,gemini-2.5-pro-preview-tts
+      GEMINI_TTS_MODELS: gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts,gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts
       GEMINI_VIDEO_MODELS: gemini-3.6-flash,gemini-3.5-flash-lite
       AUDIO_STEM_PROVIDER: reconstruct
       GEMINI_HTTP_TIMEOUT_MS: "600000"
@@ -45,14 +45,9 @@ jobs:
       TRANSCRIBE_WORKERS: "4"
       TRANSLATION_WORKERS: "4"
       TTS_WORKERS: "4"
-      # Production QA: one exact transcript per TTS request.
-      # Production QA: one exact transcript per TTS request.
-      TTS_MODE: "single"
-      TTS_MIN_COVERAGE_RATIO: "0.55"
       TTS_BATCH_CHARS: "6000"
-      TTS_LANE_COOLDOWN_SECONDS: "10"
+      TTS_LANE_COOLDOWN_SECONDS: "20"
       TTS_MAX_LANE_ATTEMPTS: "2"
-      TTS_REWRITE_ATTEMPTS: "2"
       ENABLE_ANTIGRAVITY: "true"
       ANTIGRAVITY_AGENT: "antigravity-preview-09-2026"
       ANTIGRAVITY_TIMEOUT_MS: "30000"
