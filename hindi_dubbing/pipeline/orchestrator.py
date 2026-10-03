@@ -931,17 +931,13 @@ def run_pipeline(
                     segment["id"], model, used_model,
                 )
                 segment["tts_model"] = used_model
-                brain.data.setdefault("tts_model_locks", {})[
-                    str(segment["character_id"])
-                ] = used_model
-                brain.save()
             observed = float(segment.get("tts_duration", 0.0) or 0.0)
             target = max(0.25, float(segment["end"]) - float(segment["start"]))
             coverage = observed / target if target else 1.0
             elapsed = time.monotonic() - started
             log.info(
                 "TTS line %s DONE elapsed=%.2fs generated=%.3fs target=%.3fs coverage=%.3f model=%s",
-                segment["id"], elapsed, observed, target, coverage, model,
+                segment["id"], elapsed, observed, target, coverage, used_model,
             )
             if observed <= 0.15 or (target >= 1.0 and coverage < settings.tts_min_coverage_ratio):
                 raise RuntimeError(
