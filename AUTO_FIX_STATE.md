@@ -34,3 +34,15 @@ Do not automatically apply another fix for this same signature after three conse
 failed verification runs. If the new background interaction itself fails because of
 Gemini/API availability, credentials, quota, or another external-service condition,
 pause automatic fixing and record the human action required.
+
+## Verification fix 2
+
+Run #93 showed that `background=True` is not supported by the Gemini 3.5 Transcribe
+endpoint: every key returned HTTP 400 stating that audio input modality is not enabled
+for the generated `gemini-3.5-transcribe-agent` target. The background change was therefore
+rolled back for Transcribe only.
+
+The Transcribe path now uses the documented synchronous Interactions REST endpoint with
+an explicit 600-second HTTP client timeout. This keeps the supported Transcribe contract
+while ensuring a stalled network request can fail and rotate to the next key rather than
+holding the GitHub runner for hours.
