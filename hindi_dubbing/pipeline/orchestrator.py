@@ -251,7 +251,7 @@ def _generate_segment_audio(
 
     for attempt in range(attempts + 1):
         raw = segment_dir / f'{segment["id"]}_attempt{attempt}.wav'
-        gemini.tts_segment(
+        used_model = gemini.tts_segment(
             segment,
             voice,
             raw,
@@ -261,6 +261,7 @@ def _generate_segment_audio(
             previous_interaction_id=previous_interaction_id,
             locked_model=locked_model,
         )
+        segment["tts_model_used"] = used_model
 
         trimmed = segment_dir / f'{segment["id"]}_attempt{attempt}_trim.wav'
         trim_edge_silence(raw, trimmed, log)
@@ -922,6 +923,18 @@ def run_pipeline(
                 previous_interaction_id=None,
                 locked_model=model,
             )
+            used_model = str(segment.get("tts_model_used") or model)
+            if used_model != model:
+                log.warning(
+                    "TTS line %s switched model for fallback: locked=%s used=%s; "
+                    "future lines for this character will prefer the working model",
+                    segment["id"], model, used_model,
+                )
+                segment["tts_model"] = used_model
+                brain.data.setdefault("tts_model_locks", {})[
+                    str(segment["character_id"])
+                ] = used_model
+                brain.save()
             observed = float(segment.get("tts_duration", 0.0) or 0.0)
             target = max(0.25, float(segment["end"]) - float(segment["start"]))
             coverage = observed / target if target else 1.0

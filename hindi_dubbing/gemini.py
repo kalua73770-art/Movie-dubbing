@@ -807,8 +807,16 @@ class GeminiService:
     ):
         last: Exception | None = None
 
-        models = [locked_model] if locked_model else list(self.s.tts_models)
-        if models and preferred_model_index is not None:
+        # A character's locked model is the preferred/timbre-stable route,
+        # not a hard failure boundary. If every key for that model is exhausted
+        # or temporarily unavailable, continue through the remaining configured
+        # TTS models so one quota outage cannot silence the character/movie.
+        all_models = list(self.s.tts_models)
+        if locked_model:
+            models = [locked_model] + [m for m in all_models if m != locked_model]
+        else:
+            models = all_models
+        if models and preferred_model_index is not None and not locked_model:
             offset = preferred_model_index % len(models)
             models = models[offset:] + models[:offset]
 
@@ -875,7 +883,11 @@ class GeminiService:
                 return model
             except Exception as exc:
                 last = exc
-                self.log.warning("Trying next TTS model after %s: %s", model, str(exc)[:800])
+                self.log.warning(
+                    "TTS model=%s exhausted/unavailable; trying next configured model: %s",
+                    model,
+                    str(exc)[:800],
+                )
 
         raise RuntimeError(f"TTS failed on all configured models/keys: {last}")
 
