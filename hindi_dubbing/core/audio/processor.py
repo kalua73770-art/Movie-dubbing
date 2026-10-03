@@ -36,6 +36,27 @@ def probe_wav(path: Path):
     with wave.open(str(path),"rb") as wf:
         return wf.getframerate(),wf.getnchannels(),wf.getsampwidth(),wf.getnframes()/wf.getframerate()
 
+
+def audio_quality(path: Path):
+    with wave.open(str(path), "rb") as wf:
+        raw = wf.readframes(wf.getnframes())
+        width = wf.getsampwidth()
+    if width != 2 or not raw:
+        return 0.0, 0.0
+    import array
+    samples = array.array("h")
+    samples.frombytes(raw)
+    if not samples:
+        return 0.0, 0.0
+    peak = max(abs(int(x)) for x in samples) / 32768.0
+    rms = (sum(float(x) * float(x) for x in samples) / len(samples)) ** 0.5 / 32768.0
+    return rms, peak
+
+
+def usable_speech(path: Path, min_rms: float = 0.002, min_peak: float = 0.015):
+    rms, peak = audio_quality(path)
+    return rms >= min_rms and peak >= min_peak, rms, peak
+
 def fit_audio(src: Path, dst: Path, target: float, log=None):
     src_d=probe_wav(src)[3]
     if target<=0: raise ValueError("target duration must be > 0")

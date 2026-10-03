@@ -851,14 +851,9 @@ class GeminiService:
                         "timeout": max(1, int(self.s.tts_timeout_ms / 1000)),
                     }
                 else:
-                    prompt = (
-                        "Perform this exact Hindi dialogue naturally and clearly. "
-                        "Do not omit words. Do not add words. "
-                        f"{style}.\n{segment['hindi']}"
-                    )
                     interaction_kwargs = {
                         "model": model,
-                        "input": prompt,
+                        "input": segment["hindi"],
                         "response_format": {"type": "audio"},
                         "generation_config": {
                             "speech_config": [{"voice": voice}],

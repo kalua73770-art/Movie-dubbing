@@ -131,6 +131,9 @@ class MovieBrain:
                 effective[cid] = model
         return effective
 
+    def replace_tts_model_lock(self, character_id: str, model: str) -> None:
+        self.data.setdefault("tts_model_locks", {})[str(character_id)] = str(model)
+
     def apply_agent_update(
         self,
         update: dict,

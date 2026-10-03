@@ -21,6 +21,8 @@ from hindi_dubbing.core.audio.processor import (
     silence_ranges,
     ffprobe_duration,
     probe_wav,
+    audio_quality,
+    usable_speech,
     run_cmd,
     split_audio,
 )
@@ -898,53 +900,81 @@ def run_pipeline(
         report(
             "tts",
             f"Synthesizing {len(ordered_tts)} dialogue lines with {tts_workers} "
-            f"parallel workers; model locked per character",
+            f"parallel single-turn workers; model locked per character",
         )
 
         def synthesize_line(idx, segment):
             started = time.monotonic()
-            model = segment["tts_model"]
-            model_index = gemini.tts_model_index(model)
-            key_index = idx % max(1, len(settings.api_keys))
-            log.info(
-                "TTS line %d/%d START id=%s model=%s key=#%d character=%s",
-                idx + 1, len(ordered_tts), segment["id"], model,
-                key_index + 1, segment["character_id"],
-            )
-            audio_path = _generate_segment_audio(
-                gemini,
-                segment,
-                voice_map[segment["character_id"]],
-                segments_dir,
-                log,
-                preferred_key_index=key_index,
-                preferred_model_index=model_index,
-                context_text=brain.character_context(segment["character_id"]),
-                previous_interaction_id=None,
-                locked_model=model,
-            )
-            used_model = str(segment.get("tts_model_used") or model)
-            if used_model != model:
-                log.warning(
-                    "TTS line %s switched model for fallback: locked=%s used=%s; "
-                    "future lines for this character will prefer the working model",
-                    segment["id"], model, used_model,
+            preferred_model = segment["tts_model"]
+            candidate_models = [preferred_model] + [
+                m for m in settings.tts_models if m != preferred_model
+            ]
+            last_error = None
+
+            for model in candidate_models:
+                model_index = gemini.tts_model_index(model)
+                key_index = idx % max(1, len(settings.api_keys))
+                log.info(
+                    "TTS line %d/%d START id=%s model=%s key=#%d character=%s",
+                    idx + 1, len(ordered_tts), segment["id"], model,
+                    key_index + 1, segment["character_id"],
                 )
-                segment["tts_model"] = used_model
-            observed = float(segment.get("tts_duration", 0.0) or 0.0)
-            target = max(0.25, float(segment["end"]) - float(segment["start"]))
-            coverage = observed / target if target else 1.0
-            elapsed = time.monotonic() - started
-            log.info(
-                "TTS line %s DONE elapsed=%.2fs generated=%.3fs target=%.3fs coverage=%.3f model=%s",
-                segment["id"], elapsed, observed, target, coverage, used_model,
+                try:
+                    audio_path = _generate_segment_audio(
+                        gemini,
+                        segment,
+                        voice_map[segment["character_id"]],
+                        segments_dir,
+                        log,
+                        preferred_key_index=key_index,
+                        preferred_model_index=model_index,
+                        context_text=brain.character_context(segment["character_id"]),
+                        previous_interaction_id=None,
+                        locked_model=model,
+                    )
+                    observed = float(segment.get("tts_duration", 0.0) or 0.0)
+                    target = max(0.25, float(segment["end"]) - float(segment["start"]))
+                    coverage = observed / target if target else 1.0
+                    usable, rms, peak = usable_speech(audio_path)
+                    elapsed = time.monotonic() - started
+                    log.info(
+                        "TTS line %s DONE elapsed=%.2fs generated=%.3fs target=%.3fs "
+                        "coverage=%.3f rms=%.5f peak=%.5f model=%s usable=%s",
+                        segment["id"], elapsed, observed, target, coverage,
+                        rms, peak, model, usable,
+                    )
+                    if not usable:
+                        raise RuntimeError(
+                            f"generated audio is silent/near-silent rms={rms:.5f} peak={peak:.5f}"
+                        )
+                    if observed <= 0.15 or (
+                        target >= 1.0 and coverage < settings.tts_min_coverage_ratio
+                    ):
+                        raise RuntimeError(
+                            f"TTS coverage too low: {observed:.3f}s/{target:.3f}s "
+                            f"({coverage:.2%})"
+                        )
+                    if model != preferred_model:
+                        brain.replace_tts_model_lock(segment["character_id"], model)
+                        segment["tts_model"] = model
+                        brain.save()
+                        log.warning(
+                            "TTS model fallback for character=%s: %s -> %s; "
+                            "new model is now locked",
+                            segment["character_id"], preferred_model, model,
+                        )
+                    return segment, audio_path
+                except Exception as exc:
+                    last_error = exc
+                    log.warning(
+                        "TTS line %s FAILED model=%s after %.2fs: %s",
+                        segment["id"], model, time.monotonic() - started,
+                        str(exc)[:1000],
+                    )
+
+            raise RuntimeError(
+                f"TTS line {segment['id']} failed on all models: {last_error}"
             )
-            if observed <= 0.15 or (target >= 1.0 and coverage < settings.tts_min_coverage_ratio):
-                raise RuntimeError(
-                    f"TTS coverage too low for {segment['id']}: "
-                    f"{observed:.3f}s/{target:.3f}s ({coverage:.2%})"
-                )
-            return segment, audio_path
 
         tts_results = [None] * len(ordered_tts)
         with ThreadPoolExecutor(max_workers=tts_workers) as pool:
@@ -963,6 +993,25 @@ def run_pipeline(
                     f"Completed line {completed}/{len(ordered_tts)} ({segment['id']})",
                 )
 
+        missing = [
+            segment["id"]
+            for segment, audio_path in tts_results
+            if not audio_path or not Path(audio_path).exists()
+        ]
+        if missing:
+            raise RuntimeError(f"TTS integrity check failed; missing audio: {missing}")
+
+        coverage_bad = []
+        for segment, _ in tts_results:
+            observed = float(segment.get("tts_duration", 0.0) or 0.0)
+            target = max(0.25, float(segment["end"]) - float(segment["start"]))
+            if observed <= 0.15 or (
+                target >= 1.0 and observed / target < settings.tts_min_coverage_ratio
+            ):
+                coverage_bad.append((segment["id"], observed, target))
+        if coverage_bad:
+            raise RuntimeError(f"TTS coverage QA failed: {coverage_bad}")
+
         audio_items = [
             (segment["start"], segment["dub_end"], audio_path)
             for segment, audio_path in tts_results
@@ -978,6 +1027,17 @@ def run_pipeline(
             duration,
             dialogue_track,
         )
+
+        dialogue_rms, dialogue_peak = audio_quality(dialogue_track)
+        log.info(
+            "Dialogue track QA rms=%.5f peak=%.5f",
+            dialogue_rms,
+            dialogue_peak,
+        )
+        if dialogue_rms < 0.0015 or dialogue_peak < 0.01:
+            raise RuntimeError(
+                f"Dialogue track QA failed: rms={dialogue_rms:.5f} peak={dialogue_peak:.5f}"
+            )
 
         report(
             "background",
