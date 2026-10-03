@@ -46,3 +46,8 @@ The Transcribe path now uses the documented synchronous Interactions REST endpoi
 an explicit 600-second HTTP client timeout. This keeps the supported Transcribe contract
 while ensuring a stalled network request can fail and rotate to the next key rather than
 holding the GitHub runner for hours.
+
+
+## Verification trigger
+
+The follow-up verification run is intentionally triggered only after the code fix is on `main`. No parallel Movie Dubbing Test run was active at trigger time.
