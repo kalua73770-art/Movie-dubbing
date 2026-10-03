@@ -336,11 +336,17 @@ def _generate_segment_audio(
 
 
 def _tts_batches(segments, max_chars: int, max_segments: int):
+    ordered = sorted(segments, key=lambda x: float(x["start"]))
+    # Single-turn mode is the production-safe default. One line per request avoids
+    # ambiguous silence-boundary splitting that previously clipped long dialogue.
+    if settings.tts_mode == "single":
+        return [[seg] for seg in ordered]
+
     batches = []
     current = []
     chars = 0
     speakers = set()
-    for seg in sorted(segments, key=lambda x: float(x["start"])):
+    for seg in ordered:
         cost = len(seg.get("hindi", "")) + 60
         seg_speaker = str(seg.get("speaker", ""))
         if current and (
@@ -387,6 +393,14 @@ def _split_batch_audio(
         trim_edge_silence(path, path.with_name(path.stem + "_trim.wav"), log)
         path = path.with_name(path.stem + "_trim.wav")
         observed = probe_wav(path)[3]
+        target = max(0.25, float(seg["end"]) - float(seg["start"]))
+        coverage = observed / target if target else 1.0
+        if settings.tts_mode == "single" and coverage < settings.tts_min_coverage_ratio:
+            log.warning(
+                "Single-turn TTS clip too short for %s: %.3fs/%.3fs (%.1f%%); rejecting clipped audio",
+                seg["id"], observed, target, coverage * 100.0,
+            )
+            return None
         seg["tts_duration"] = observed
         seg["dub_end"] = min(
             float(seg["start"]) + observed,
