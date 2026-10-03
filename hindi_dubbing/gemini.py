@@ -803,10 +803,11 @@ class GeminiService:
         preferred_model_index: int | None = None,
         context_text: str = "",
         previous_interaction_id: str | None = None,
+        locked_model: str | None = None,
     ):
         last: Exception | None = None
 
-        models = list(self.s.tts_models)
+        models = [locked_model] if locked_model else list(self.s.tts_models)
         if models and preferred_model_index is not None:
             offset = preferred_model_index % len(models)
             models = models[offset:] + models[:offset]
@@ -818,31 +819,44 @@ class GeminiService:
                     "TTS segment=%s model=%s key=#%d voice=%s",
                     segment["id"], model, key_index + 1, voice,
                 )
-                tts_text = (
-                    "Locked character context:\n" + (context_text or "No extra confirmed context.") +
-                    "\n\nPerform this exact Hindi line as spoken dialogue. Do not add words.\n" +
-                    segment["hindi"]
-                )
-                interaction_kwargs = {
-                    "model": model,
-                    "input": [{
-                        "type": "user_input",
-                        "content": [{
-                            "type": "text",
-                            "text": tts_text,
-                            "annotations": [{
-                                "type": "speech_metadata",
-                                "style": style,
+                if model.startswith("gemini-3.8-"):
+                    if context_text:
+                        style += "; continuity=" + context_text[:500]
+                    interaction_kwargs = {
+                        "model": model,
+                        "input": [{
+                            "type": "user_input",
+                            "content": [{
+                                "type": "text",
+                                "text": segment["hindi"],
+                                "annotations": [{
+                                    "type": "speech_metadata",
+                                    "speaker": str(segment.get("speaker", "speaker")),
+                                    "style": style,
+                                }],
                             }],
                         }],
-                    }],
-                    "response_format": {"type": "audio"},
-                    "generation_config": {"speech_config": [{"voice": voice}]},
-                    "timeout": max(1, int(self.s.tts_timeout_ms / 1000)),
-                }
-                # TTS models are handled as independent audio-generation calls.
-                # Do not attach Movie Brain interaction IDs: some TTS endpoints reject
-                # multiturn/previous_interaction_id even though the model itself is valid.
+                        "response_format": {"type": "audio"},
+                        "generation_config": {
+                            "speech_config": [{"voice": voice}],
+                        },
+                        "timeout": max(1, int(self.s.tts_timeout_ms / 1000)),
+                    }
+                else:
+                    prompt = (
+                        "Perform this exact Hindi dialogue naturally and clearly. "
+                        "Do not omit words. Do not add words. "
+                        f"{style}.\n{segment['hindi']}"
+                    )
+                    interaction_kwargs = {
+                        "model": model,
+                        "input": prompt,
+                        "response_format": {"type": "audio"},
+                        "generation_config": {
+                            "speech_config": [{"voice": voice}],
+                        },
+                        "timeout": max(1, int(self.s.tts_timeout_ms / 1000)),
+                    }
                 interaction = client.interactions.create(**interaction_kwargs)
                 data = getattr(getattr(interaction, "output_audio", None), "data", None)
                 if not data:
@@ -907,6 +921,12 @@ class GeminiService:
             }
 
         return [{"type": "user_input", "content": content}], speech_config
+
+    def tts_model_index(self, model: str) -> int:
+        try:
+            return self.s.tts_models.index(model)
+        except ValueError:
+            return 0
 
     def tts_lanes(self) -> list[tuple[str, int]]:
         """Return model/key lanes that survived TTS preflight.

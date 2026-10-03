@@ -72,6 +72,10 @@ class Settings:
     tts_batch_max_segments: int = int(os.getenv("TTS_BATCH_MAX_SEGMENTS", "12"))
     tts_lane_cooldown_seconds: int = int(os.getenv("TTS_LANE_COOLDOWN_SECONDS", "20"))
     tts_max_lane_attempts: int = int(os.getenv("TTS_MAX_LANE_ATTEMPTS", "2"))
+    tts_mode: str = os.getenv("TTS_MODE", "single")
+    tts_min_coverage_ratio: float = float(
+        os.getenv("TTS_MIN_COVERAGE_RATIO", "0.55")
+    )
 
     antigravity_api_keys: list[str] = field(
         default_factory=lambda: _csv(
@@ -134,7 +138,7 @@ class Settings:
     target_tts_max_ratio: float = float(
         os.getenv("TARGET_TTS_MAX_RATIO", "1.40")
     )
-    rewrite_attempts: int = int(os.getenv("TTS_REWRITE_ATTEMPTS", "1"))
+    rewrite_attempts: int = int(os.getenv("TTS_REWRITE_ATTEMPTS", "2"))
     background_scene_threshold: float = float(os.getenv("BACKGROUND_SCENE_THRESHOLD", "0.35"))
 
     speaker_analysis_model: str = os.getenv(
@@ -184,6 +188,10 @@ class Settings:
             raise RuntimeError("TTS_BATCH_MAX_SEGMENTS must be >= 2")
         if self.tts_max_lane_attempts < 1:
             raise RuntimeError("TTS_MAX_LANE_ATTEMPTS must be >= 1")
+        if self.tts_mode not in {"single", "batch"}:
+            raise RuntimeError("TTS_MODE must be 'single' or 'batch'")
+        if not (0.10 <= self.tts_min_coverage_ratio <= 1.0):
+            raise RuntimeError("TTS_MIN_COVERAGE_RATIO must be between 0.10 and 1.0")
         if self.antigravity_window_seconds < 30:
             raise RuntimeError("ANTIGRAVITY_WINDOW_SECONDS must be >= 30")
         if self.antigravity_max_windows < 1:

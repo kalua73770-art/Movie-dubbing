@@ -32,6 +32,7 @@ class MovieBrain:
             "updated_at": time.time(),
             "characters": {},
             "voice_locks": {},
+            "tts_model_locks": {},
             "relationships": [],
             "timeline": [],
             "scene_summaries": [],
@@ -114,6 +115,20 @@ class MovieBrain:
             else:
                 locks[cid] = str(voice)
                 effective[cid] = str(voice)
+        return effective
+
+    def lock_tts_models(self, proposed):
+        locks = self.data.setdefault("tts_model_locks", {})
+        effective = {}
+        for cid, model in (proposed or {}).items():
+            cid = str(cid)
+            model = str(model)
+            existing = locks.get(cid)
+            if existing:
+                effective[cid] = existing
+            else:
+                locks[cid] = model
+                effective[cid] = model
         return effective
 
     def apply_agent_update(

@@ -110,6 +110,13 @@ class ContinuityTests(unittest.TestCase):
         self.assertEqual(env_id, "env1")
         self.assertEqual(key, 0)
 
+    def test_movie_brain_locks_tts_model(self):
+        brain = MovieBrain(Path(tempfile.mkdtemp()) / "movie_brain.json").load()
+        first = brain.lock_tts_models({"c1": "gemini-3.8-flash-tts"})
+        second = brain.lock_tts_models({"c1": "gemini-3.8-flash-lite-tts"})
+        self.assertEqual(first["c1"], "gemini-3.8-flash-tts")
+        self.assertEqual(second["c1"], "gemini-3.8-flash-tts")
+
 
 if __name__ == "__main__":
     unittest.main()
