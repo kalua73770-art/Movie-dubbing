@@ -904,12 +904,12 @@ class GeminiService:
             content.append(item)
 
         if len(speaker_ids) == 1:
-            speech_config = {
-                "speakers": [{
-                    "speaker": speaker_ids[0],
-                    "voice": voices[speaker_ids[0]],
-                }]
-            }
+            # Gemini 3.8 TTS single-speaker mode requires an array of voice
+            # configs. The {"speakers": [...]} object is multi-speaker mode
+            # and requires exactly two speaker_voice_configs.
+            speech_config = [{
+                "voice": voices[speaker_ids[0]],
+            }]
         else:
             speech_config = {
                 "mode": "conversational",
