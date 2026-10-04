@@ -192,9 +192,9 @@ class GeminiService:
                     cooldown,
                     str(exc)[:900],
                 )
-                # A model/endpoint 404 is deterministic for this API key/model;
-                # do not spend the rest of the key pool repeating it.
-                if kind == "model_unavailable":
+                # Request-shape/model-capability errors are deterministic across
+                # API keys. Retrying every key only multiplies the same 400 failure.
+                if kind in {"model_unavailable", "request"}:
                     break
         raise RuntimeError(
             f"{task} failed for model={model} on all configured API keys: {last}"
@@ -888,15 +888,20 @@ class GeminiService:
             style = GeminiService._style(seg)
             if context_text:
                 style += "; continuity: " + context_text[:500]
-            content.append({
+            item = {
                 "type": "text",
                 "text": text,
-                "annotations": [{
+            }
+            # Current Gemini TTS models reject speech_metadata annotations on
+            # single-speaker requests. Voice is already selected in speech_config,
+            # so annotations are unnecessary for the production single-turn path.
+            if len(speaker_ids) > 1:
+                item["annotations"] = [{
                     "type": "speech_metadata",
                     "speaker": str(seg["speaker"]),
                     "style": style,
-                }],
-            })
+                }]
+            content.append(item)
 
         if len(speaker_ids) == 1:
             speech_config = {
