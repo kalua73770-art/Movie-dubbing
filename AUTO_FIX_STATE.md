@@ -38,3 +38,17 @@ Evidence: run #99 returned HTTP 400 with `multi_speaker_voice_config.speaker_voi
 Root cause: the single-speaker branch constructed the multi-speaker `{"speakers":[...]}` shape. Gemini's TTS API expects single-speaker `speech_config` to be an array such as `[{"voice":"Kore"}]`; the `speakers` object is for two-speaker generation. citeturn573792search0turn573792search3
 
 Fix: single-speaker TTS now emits the single-speaker array voice config. This is committed in `6b219deb6b71fe123c4fabc27451cc2f94f4e03c`.
+
+
+## Production TTS routing correction — 2026-10-05
+
+Fix signature: tts-single-mode-was-still-using-batch-splitting
+Attempt: 1/3.
+
+Evidence: despite `TTS_MODE=single`, run #100 still executed `TTS batch` and `_split_batch_audio`, proving the orchestrator had not actually routed production single-turn mode through `GeminiService.tts_segment()`. This allowed silence-boundary extraction to clip dialogue and caused a 5h29m run before cancellation.
+
+Fix:
+- Production `TTS_MODE=single` now calls `_generate_segment_audio()` / `tts_segment()` once per dialogue line.
+- Batch synthesis remains available only when explicitly configured as `TTS_MODE=batch`.
+- Single-turn TTS uses the fixed single-speaker voice config and no unsupported speech annotations.
+- Existing 75% coverage QA remains enabled, and duration rewrite attempts remain 3.
