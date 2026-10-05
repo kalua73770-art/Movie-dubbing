@@ -838,10 +838,6 @@ class GeminiService:
                         "content": [{
                             "type": "text",
                             "text": tts_text,
-                            "annotations": [{
-                                "type": "speech_metadata",
-                                "style": style,
-                            }],
                         }],
                     }],
                     "response_format": {"type": "audio"},
