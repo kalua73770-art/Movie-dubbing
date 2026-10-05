@@ -858,88 +858,155 @@ def run_pipeline(
                 else duration
             )
 
-        tts_batches = _tts_batches(
-            segments,
-            int(settings.tts_batch_chars),
-            int(settings.tts_batch_max_segments),
-        )
-        lanes = gemini.tts_lanes()
-        if not lanes:
-            raise RuntimeError("No TTS model/key lanes survived preflight")
-        tts_workers = min(
-            max(1, int(settings.tts_workers)),
-            max(1, len(tts_batches)),
-            max(1, len(lanes)),
-        )
-        report(
-            "tts",
-            f"Synthesizing {len(segments)} lines as {len(tts_batches)} batches "
-            f"across {len(lanes)} model/key lanes with {tts_workers} workers",
-        )
+        if settings.tts_mode == "single":
+            ordered_tts = sorted(segments, key=lambda x: float(x["start"]))
+            tts_workers = min(
+                max(1, int(settings.tts_workers)),
+                max(1, len(ordered_tts)),
+            )
+            report(
+                "tts",
+                f"Synthesizing {len(ordered_tts)} dialogue lines individually "
+                f"with {tts_workers} workers",
+            )
 
-        # Prevent the same concrete project/model lane from being hammered.
-        lane_lock = {}
-        lane_last_request = {}
-        lane_guard = threading.Lock()
-
-        def synthesize_batch(idx, batch):
-            last = None
-            # Pick a different lane for each batch and move on immediately after
-            # one bounded timeout/error. No nested all-key/all-model retry loop.
-            order = []
-            for shift in range(len(lanes)):
-                order.append(lanes[(idx + shift) % len(lanes)])
-            for lane in order:
-                model, key_index = lane
-                try:
-                    with lane_guard:
-                        while lane_lock.get(lane, False):
-                            lane_guard.release()
-                            time.sleep(0.05)
-                            lane_guard.acquire()
-                        lane_lock[lane] = True
-                        last_at = lane_last_request.get(lane, 0.0)
-                        wait = max(0.0, float(settings.tts_lane_cooldown_seconds) - (time.monotonic() - last_at))
-                    if wait:
-                        time.sleep(wait)
-
-                    try:
-                        paths, used_lane = _generate_tts_batch(
-                            gemini, batch, voice_map, segments_dir, log, idx, [lane],
-                        )
-                    finally:
-                        with lane_guard:
-                            lane_last_request[lane] = time.monotonic()
-                            lane_lock[lane] = False
-                    return idx, list(zip(batch, paths)), used_lane
-                except Exception as exc:
-                    last = exc
-                    log.warning(
-                        "TTS batch %d moving to next lane after model=%s key=#%d: %s",
-                        idx + 1, model, key_index + 1, str(exc)[:700],
-                    )
-                    continue
-
-            raise RuntimeError(f"TTS batch {idx + 1} failed on all available lanes: {last}")
-
-        tts_results = [None] * len(segments)
-        with ThreadPoolExecutor(max_workers=tts_workers) as pool:
-            futures = {
-                pool.submit(synthesize_batch, idx, batch): idx
-                for idx, batch in enumerate(tts_batches)
-            }
-            done = 0
-            for future in as_completed(futures):
-                idx, items, lane = future.result()
-                for segment, audio_path in items:
-                    segment["audio_path"] = str(audio_path)
-                    tts_results[segments.index(segment)] = audio_path
-                done += 1
-                report(
-                    "tts",
-                    f"Completed TTS batch {done}/{len(tts_batches)} on "
-                    f"{lane[0]} key=#{lane[1]+1}",
+            def synthesize_line(idx, segment):
+                preferred_model_index = idx % max(1, len(settings.tts_models))
+                preferred_key_index = idx % max(1, len(settings.api_keys))
+                voice = voice_map[segment["character_id"]]
+                audio_path = _generate_segment_audio(
+                    gemini,
+                    segment,
+                    voice,
+                    segments_dir,
+                    log,
+                    preferred_key_index=preferred_key_index,
+                    preferred_model_index=preferred_model_index,
+                    context_text=brain.character_context(segment["character_id"]),
+                    previous_interaction_id=None,
                 )
+                target = max(0.25, float(segment["end"]) - float(segment["start"]))
+                observed = float(segment.get("tts_duration", 0.0) or 0.0)
+                coverage = observed / target if target else 1.0
+                if coverage < settings.tts_min_coverage_ratio:
+                    raise RuntimeError(
+                        f"TTS coverage too low for {segment['id']}: "
+                        f"{observed:.3f}s/{target:.3f}s ({coverage:.1%})"
+                    )
+                return segment, audio_path
+
+            tts_results_by_id = {}
+            with ThreadPoolExecutor(max_workers=tts_workers) as pool:
+                futures = {
+                    pool.submit(synthesize_line, idx, segment): idx
+                    for idx, segment in enumerate(ordered_tts)
+                }
+                completed = 0
+                for future in as_completed(futures):
+                    segment, audio_path = future.result()
+                    segment["audio_path"] = str(audio_path)
+                    tts_results_by_id[segment["id"]] = audio_path
+                    completed += 1
+                    report(
+                        "tts",
+                        f"Completed dialogue {completed}/{len(ordered_tts)} "
+                        f"({segment['id']})",
+                    )
+            tts_results = [tts_results_by_id[segment["id"]] for segment in segments]
+
+        else:
+            tts_batches = _tts_batches(
+                segments,
+                int(settings.tts_batch_chars),
+                int(settings.tts_batch_max_segments),
+            )
+            lanes = gemini.tts_lanes()
+            if not lanes:
+                raise RuntimeError("No TTS model/key lanes survived preflight")
+            tts_workers = min(
+                max(1, int(settings.tts_workers)),
+                max(1, len(tts_batches)),
+                max(1, len(lanes)),
+            )
+            report(
+                "tts",
+                f"Synthesizing {len(segments)} lines as {len(tts_batches)} batches "
+                f"across {len(lanes)} model/key lanes with {tts_workers} workers",
+            )
+
+            lane_lock = {}
+            lane_last_request = {}
+            lane_guard = threading.Lock()
+
+            def synthesize_batch(idx, batch):
+                last = None
+                order = [lanes[(idx + shift) % len(lanes)] for shift in range(len(lanes))]
+                for lane in order:
+                    model, key_index = lane
+                    try:
+                        with lane_guard:
+                            while lane_lock.get(lane, False):
+                                lane_guard.release()
+                                time.sleep(0.05)
+                                lane_guard.acquire()
+                            lane_lock[lane] = True
+                            last_at = lane_last_request.get(lane, 0.0)
+                            wait = max(
+                                0.0,
+                                float(settings.tts_lane_cooldown_seconds)
+                                - (time.monotonic() - last_at),
+                            )
+                        if wait:
+                            time.sleep(wait)
+
+                        try:
+                            paths, used_lane = _generate_tts_batch(
+                                gemini,
+                                batch,
+                                voice_map,
+                                segments_dir,
+                                log,
+                                idx,
+                                [lane],
+                            )
+                        finally:
+                            with lane_guard:
+                                lane_last_request[lane] = time.monotonic()
+                                lane_lock[lane] = False
+                        return idx, list(zip(batch, paths)), used_lane
+                    except Exception as exc:
+                        last = exc
+                        log.warning(
+                            "TTS batch %d moving to next lane after model=%s key=#%d: %s",
+                            idx + 1,
+                            model,
+                            key_index + 1,
+                            str(exc)[:700],
+                        )
+                        continue
+
+                raise RuntimeError(
+                    f"TTS batch {idx + 1} failed on all available lanes: {last}"
+                )
+
+            tts_results = [None] * len(segments)
+            with ThreadPoolExecutor(max_workers=tts_workers) as pool:
+                futures = {
+                    pool.submit(synthesize_batch, idx, batch): idx
+                    for idx, batch in enumerate(tts_batches)
+                }
+                done = 0
+                for future in as_completed(futures):
+                    idx, items, lane = future.result()
+                    for segment, audio_path in items:
+                        segment["audio_path"] = str(audio_path)
+                        tts_results[segments.index(segment)] = audio_path
+                    done += 1
+                    report(
+                        "tts",
+                        f"Completed TTS batch {done}/{len(tts_batches)} on "
+                        f"{lane[0]} key=#{lane[1]+1}",
+                    )
 
         for segment, audio_path in zip(segments, tts_results):
             segment["audio_path"] = str(audio_path)
