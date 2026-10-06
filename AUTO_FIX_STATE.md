@@ -77,3 +77,16 @@ Scope: translation only.
 - Existing duration/word-count logic, translation prompt, batching, MovieBrain context hand-off, and `ID|||Hindi text` output parsing are preserved.
 - Gemini transcription, TTS, video understanding, Antigravity, and other pipeline stages are unchanged.
 - Fixed the prior rewrite-variable NameError by using explicit `rewrite_attempts`.
+
+
+## OpenRouter continuity migration — 2026-10-06
+
+Scope: movie understanding + continuity only.
+- Nemotron 3 Nano Omni free is the primary video/audio observer.
+- Nemotron 3 Ultra free is the primary movie-level continuity reasoner.
+- MovieBrain remains the persistent canonical memory and voice-lock source of truth.
+- Gemini remains for transcription, boundary analysis/preprocessing and fallback observation.
+- Antigravity is no longer used by the active pipeline path.
+- Natural chunks are contiguous, capped below the configured short-video ceiling, and chosen near transcript/scene boundaries.
+- Local chunks are sent as video plus audio together to the Nano observer.
+- The previous rewrite-attempt NameError is corrected with explicit rewrite_attempts.
