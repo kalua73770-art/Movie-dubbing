@@ -39,6 +39,7 @@ class MovieBrain:
             "important_events": [],
             "decisions": [],
             "interaction_ids": {},
+            "observations": [],
         }
 
     def load(self) -> "MovieBrain":
@@ -133,7 +134,25 @@ class MovieBrain:
             }
         self.merge_characters(registry)
 
+        aliases = update.get("character_aliases") or {}
+        if isinstance(aliases, dict):
+            for ann in update.get("annotations", []) or []:
+                if isinstance(ann, dict):
+                    observed = str(ann.get("character_id") or "")
+                    if observed in aliases:
+                        ann["character_id"] = str(aliases[observed])
+            raw_chars = update.get("characters")
+            if isinstance(raw_chars, list):
+                for char in raw_chars:
+                    if isinstance(char, dict):
+                        observed = str(char.get("character_id") or "")
+                        if observed in aliases:
+                            char["character_id"] = str(aliases[observed])
+
         self.add_relationships(update.get("relationships", []))
+        self.add_glossary(update.get("glossary", {}))
+        for observation in (update.get("observations") or []):
+            self.add_observation(observation)
         self.add_glossary(update.get("glossary", {}))
 
         for event in (update.get("important_events") or update.get("events") or []):
@@ -203,6 +222,15 @@ class MovieBrain:
                 glossary[key] = value[:500]
         self.compact(save=False)
 
+    def add_observation(self, value) -> None:
+        if isinstance(value, dict):
+            item = dict(value)
+        else:
+            item = {"observation": str(value or "").strip()}
+        if item.get("observation") or item.get("text") or item.get("summary"):
+            self.data.setdefault("observations", []).append(item)
+        self.compact(save=False)
+
     def add_event(self, value) -> None:
         if isinstance(value, dict):
             event = dict(value)
@@ -231,6 +259,7 @@ class MovieBrain:
             ("scene_summaries", self.MAX_SCENE_SUMMARIES),
             ("decisions", self.MAX_DECISIONS),
             ("important_events", self.MAX_EVENTS),
+            ("observations", 500),
         ):
             values = self.data.setdefault(key, [])
             if len(values) > limit:
@@ -282,6 +311,7 @@ class MovieBrain:
         glossary = self.data.get("glossary", {})
         decisions = self.data.get("decisions", [])[-12:]
         events = self.data.get("important_events", [])[-8:]
+        observations = self.data.get("observations", [])[-16:]
 
         parts = [
             "CANONICAL MOVIE BRAIN. Project state is the source of truth; "
@@ -302,6 +332,14 @@ class MovieBrain:
                 "Important events:\n"
                 + "\n".join(
                     "- " + json.dumps(e, ensure_ascii=False) for e in events
+                )
+            )
+        if observations:
+            parts.append(
+                "Recent observations:\n"
+                + "\n".join(
+                    "- " + json.dumps(o, ensure_ascii=False)
+                    for o in observations
                 )
             )
         if glossary:
