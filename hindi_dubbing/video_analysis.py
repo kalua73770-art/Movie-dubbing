@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import subprocess
 import time
 from pathlib import Path
 
@@ -185,6 +186,85 @@ class VideoAnalyzer:
             "server disconnected", "temporarily unavailable",
             "resource_exhausted", "too many requests",
         ))
+
+
+    def _extract_boundary_clip(self, video_path: Path, start: float, end: float, out: Path):
+        out.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-ss", f"{max(0.0, start):.3f}", "-to", f"{max(start, end):.3f}",
+             "-i", str(video_path), "-vf", "scale=640:-2", "-r", "8",
+             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
+             "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart", str(out)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0 or not out.exists():
+            raise RuntimeError(f"Gemini boundary clip creation failed: {result.stderr[-500:]}")
+        return out
+
+    def suggest_natural_boundaries(
+        self, video_path: Path, transcript_segments: list[dict], duration: float,
+        target_seconds: int, max_seconds: int, search_seconds: int, work_dir: Path,
+    ) -> list[float]:
+        if duration <= target_seconds:
+            return [round(duration, 3)]
+        boundaries, previous = [], 0.0
+        model = self.s.video_models[0] if self.s.video_models else None
+        if not model:
+            return [round(min(duration, target_seconds), 3)]
+        ordered = sorted(transcript_segments, key=lambda x: float(x["start"]))
+        for boundary_index in range(1, 1000):
+            desired = previous + target_seconds
+            if desired >= duration or duration - previous <= max_seconds:
+                break
+            low = max(previous + 30.0, desired - float(search_seconds))
+            high = min(duration - 5.0, desired + float(search_seconds))
+            gaps = []
+            for i in range(len(ordered) - 1):
+                left, right = ordered[i], ordered[i + 1]
+                gap = float(right["start"]) - float(left["end"])
+                midpoint = (float(left["end"]) + float(right["start"])) / 2.0
+                if gap >= 0.25 and low <= midpoint <= high:
+                    gaps.append((abs(midpoint - desired), midpoint))
+            gaps.sort()
+            fallback = gaps[0][1] if gaps else desired
+            clip_start, clip_end = max(previous, desired - search_seconds), min(duration, desired + search_seconds)
+            clip = work_dir / "boundary_checks" / f"boundary_{boundary_index:03d}.mp4"
+            try:
+                self._extract_boundary_clip(video_path, clip_start, clip_end, clip)
+                _, _, client = next(self._clients())
+                media = self._upload(client, clip)
+                local = "\n".join(
+                    f'{s["start"]:.2f}-{s["end"]:.2f}s | {s.get("speaker")} | {s.get("text","")}'
+                    for s in ordered if float(s["end"]) > clip_start and float(s["start"]) < clip_end
+                )
+                prompt = (
+                    "Choose the safest cut point. Prefer natural pause, shot transition or speaker turn. "
+                    "Never cut inside a word or mid-sentence unless unavoidable. Return only JSON "
+                    '{"cut_offset": number}. cut_offset is seconds from this clip start. '
+                    f"Preferred target={desired - clip_start:.2f}s; allowed absolute={low:.2f}-{high:.2f}s. "
+                    f"Transcript:\n{local}"
+                )
+                interaction=client.interactions.create(
+                    model=model,
+                    input=[{"type":"video","uri":media.uri,"mime_type":"video/mp4"},
+                           {"type":"text","text":prompt}],
+                    timeout=max(30,int(self.s.video_timeout_ms/1000)),
+                )
+                data=self._extract_json(getattr(interaction,"output_text","") or "")
+                candidate=clip_start+float(data.get("cut_offset",0) or 0)
+                cut=candidate if low <= candidate <= high else fallback
+                self.log.info("Gemini boundary #%d target=%.2f chosen=%.2f",boundary_index,desired,cut)
+                try: client.files.delete(name=media.name)
+                except Exception: pass
+            except Exception as exc:
+                cut=fallback
+                self.log.warning("Gemini boundary #%d failed; fallback %.2f: %s",boundary_index,cut,str(exc)[:700])
+            if cut <= previous + 30.0:
+                cut=min(duration-5.0, desired)
+            boundaries.append(round(cut,3))
+            previous=cut
+        boundaries.append(round(duration,3))
+        return boundaries
 
     def analyze(self, video_path: Path, transcript_segments: list[dict]):
         duration = max(
