@@ -823,12 +823,19 @@ class GeminiService:
                     "TTS segment=%s model=%s key=#%d voice=%s",
                     segment["id"], model, key_index + 1, voice,
                 )
+                target_duration = max(
+                    0.25,
+                    float(segment["end"]) - float(segment["start"]),
+                )
+                pace = segment.get("pace", "normal")
                 tts_text = (
                     "Locked character context:\n" + (context_text or "No extra confirmed context.") +
                     "\n\nPerform this exact Hindi line as natural Indian Hindi spoken dialogue. "
-                    "Treat Devanagari text as Hindi and use Indian-Hindi phonetics, rhythm and stress; "
+                    "Treat Devanagari text as Hindi and use Indian-Hindi phonetics, rhythm, pauses and stress; "
                     "do not read Hindi words with an English accent or Roman-English pronunciation. "
-                    "Do not translate, paraphrase, shorten or add words.\n" +
+                    "Do not translate, paraphrase, shorten or add words. "
+                    f"Aim for about {target_duration:.2f} seconds at a natural {pace} speaking rate; "
+                    "do not rush the line just to finish quickly.\n" +
                     segment["hindi"]
                 )
                 interaction_kwargs = {
