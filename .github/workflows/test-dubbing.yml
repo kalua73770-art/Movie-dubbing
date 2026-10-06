@@ -6,6 +6,12 @@ concurrency:
   cancel-in-progress: true
 
 on:
+  push:
+    paths:
+      - "test/Input.mp4"
+      - "hindi_dubbing/**"
+      - "pyproject.toml"
+      - ".github/workflows/test-dubbing.yml"
   workflow_dispatch:
     inputs:
       video_path:
@@ -24,6 +30,7 @@ jobs:
 
     env:
       GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       ANTIGRAVITY_API_KEYS: ${{ secrets.ANTIGRAVITY_API_KEYS || secrets.GEMINI_API_KEYS }}
       GEMINI_TRANSCRIBE_MODEL: gemini-3.5-transcribe
@@ -41,6 +48,16 @@ jobs:
       TRANSCRIBE_WORKERS: "4"
       TRANSLATION_WORKERS: "4"
       TTS_WORKERS: "4"
+      ENABLE_OPENROUTER_CONTINUITY: "true"
+      OPENROUTER_VIDEO_MODEL: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+      OPENROUTER_REASONING_MODEL: "nvidia/nemotron-3-ultra-550b-a55b:free"
+      OPENROUTER_TIMEOUT_MS: "180000"
+      OPENROUTER_CHUNK_SECONDS: "100"
+      OPENROUTER_CHUNK_MAX_SECONDS: "112"
+      OPENROUTER_BOUNDARY_SEARCH_SECONDS: "12"
+      OPENROUTER_VIDEO_MAX_MB: "25"
+      OPENROUTER_VIDEO_WIDTH: "640"
+      OPENROUTER_VIDEO_FPS: "10"
       GROQ_TRANSLATION_MODEL: "openai/gpt-oss-120b"
       GROQ_TIMEOUT_MS: "60000"
       TTS_MODE: "single"
@@ -108,6 +125,9 @@ jobs:
 
       - name: Smoke test Groq translation
         run: python scripts/groq_translation_smoke.py
+
+      - name: Smoke test OpenRouter models
+        run: python scripts/openrouter_smoke.py
 
       - name: Run movie dubbing
         run: |
