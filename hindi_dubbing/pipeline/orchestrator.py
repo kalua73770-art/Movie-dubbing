@@ -25,7 +25,7 @@ from hindi_dubbing.core.audio.processor import (
     split_audio,
 )
 from hindi_dubbing.core.mixing.mixer import mix_final
-from hindi_dubbing.antigravity import AntigravityService
+from hindi_dubbing.openrouter import OpenRouterService
 from hindi_dubbing.gemini import GeminiService
 from hindi_dubbing.groq_translation import GroqTranslator
 from hindi_dubbing.movie_brain import MovieBrain
@@ -664,93 +664,90 @@ def run_pipeline(
 
         registry = {}
         reasoning_ok = False
+        annotations = []
 
-        if settings.enable_antigravity:
-            report(
-                "brain",
-                "Using Antigravity for scene-level character continuity and movie memory",
-            )
+        if settings.enable_openrouter_continuity:
+            report("brain", "Nemotron Nano Omni observer + Nemotron Ultra continuity brain")
             try:
-                antigravity_result = AntigravityService(
-                    settings,
-                    log,
-                ).analyze(
-                    source_video,
-                    segments,
-                    brain,
-                    work,
+                openrouter = OpenRouterService(settings, log)
+                boundary_planner = VideoAnalyzer(settings, log)
+                boundaries = boundary_planner.suggest_natural_boundaries(
+                    source_video, segments, duration,
+                    target_seconds=settings.openrouter_chunk_seconds,
+                    max_seconds=settings.openrouter_chunk_max_seconds,
+                    search_seconds=settings.openrouter_boundary_search_seconds,
+                    work_dir=work,
                 )
-                annotations = antigravity_result.get("annotations", [])
-                registry = antigravity_result.get("characters", {}) or {}
-                for scene in antigravity_result.get("scene_summaries", []):
-                    brain.add_scene_summary(
-                        scene.get("start", 0),
-                        scene.get("end", 0),
-                        scene.get("summary", ""),
-                    )
-                brain.add_relationships(antigravity_result.get("relationships", []))
-                brain.add_glossary(antigravity_result.get("glossary", {}))
-                for event in antigravity_result.get("important_events", []):
-                    brain.add_event(event)
-                for decision in antigravity_result.get("decisions", []):
-                    brain.add_decision(decision)
+                video_chunks = openrouter.create_video_chunks(
+                    source_video, boundaries, work / "openrouter_chunks"
+                )
+                report("brain", f"Prepared {len(video_chunks)} contiguous natural chunks")
 
-                _merge_video_annotations(
-                    segments,
-                    annotations,
-                    registry,
-                )
-                reasoning_ok = bool(annotations or registry)
-                brain.save()
-                report(
-                    "brain",
-                    "Antigravity continuity pass completed",
-                )
+                for chunk_index, chunk_info in enumerate(video_chunks, 1):
+                    chunk_start=float(chunk_info["start"])
+                    chunk_end=float(chunk_info["end"])
+                    chunk_segments=[s for s in segments if float(s["start"])>=chunk_start-0.01 and float(s["end"])<=chunk_end+0.01]
+                    if not chunk_segments:
+                        continue
+                    try:
+                        observed=openrouter.analyze_chunk(
+                            chunk_info["video"], chunk_info["audio"], chunk_segments,
+                            brain.agent_context(max_chars=90000), chunk_start, chunk_end
+                        )
+                    except Exception as nano_exc:
+                        log.warning("Nano Omni chunk %d/%d failed; Gemini fallback: %s",chunk_index,len(video_chunks),str(nano_exc)[:1000])
+                        local=[]
+                        for s in chunk_segments:
+                            x=dict(s); x["start"]=max(0.0,float(s["start"])-chunk_start); x["end"]=max(0.0,float(s["end"])-chunk_start); local.append(x)
+                        observed=VideoAnalyzer(settings,log).analyze(chunk_info["video"],local)
+                    try:
+                        continuity_update=openrouter.reason_continuity(
+                            observed, chunk_segments, brain.agent_context(max_chars=100000),
+                            chunk_start, chunk_end
+                        )
+                    except Exception as ultra_exc:
+                        log.warning("Nemotron Ultra chunk %d/%d failed; observer output only: %s",chunk_index,len(video_chunks),str(ultra_exc)[:1000])
+                        continuity_update=observed
+
+                    valid_ids={str(s["id"]) for s in chunk_segments}
+                    accepted=brain.apply_agent_update(continuity_update,segment_ids=valid_ids)
+                    for ann in accepted:
+                        sid=str(ann.get("segment_id"))
+                        target=next((s for s in chunk_segments if str(s["id"])==sid),None)
+                        if target:
+                            for key in ("character_id","emotion","pace","intensity","style","on_screen"):
+                                if key in ann and ann[key] not in (None,""):
+                                    target[key]=ann[key]
+
+                    registry={cid:dict(profile) for cid,profile in brain.data.get("characters",{}).items()}
+                    brain.lock_voices(gemini.choose_voices(registry,locked_voices=brain.data.get("voice_locks",{})))
+                    brain.save()
+                    annotations.extend(accepted)
+                    reasoning_ok=reasoning_ok or bool(accepted or registry)
+                    report("brain",f"Chunk {chunk_index}/{len(video_chunks)} complete; characters={len(registry)} locked_voices={len(brain.data.get('voice_locks',{}))}")
+                _merge_video_annotations(segments,annotations,registry)
             except Exception as exc:
-                log.warning(
-                    "Antigravity continuity pass unavailable; falling back to Gemini video analysis: %s",
-                    str(exc)[:1200],
-                )
+                log.warning("OpenRouter continuity unavailable; Gemini fallback: %s",str(exc)[:1200])
 
         if not reasoning_ok and settings.enable_video_analysis:
-            report(
-                "video",
-                "Using bounded Gemini video understanding as continuity fallback",
-            )
+            report("video","Using bounded Gemini video understanding as continuity fallback")
             try:
-                video_result = VideoAnalyzer(
-                    settings,
-                    log,
-                ).analyze(source_video, segments)
-                annotations = video_result["annotations"]
-                registry = video_result["registry"]
-                for scene in video_result.get("scene_summaries", []):
-                    brain.add_scene_summary(
-                        scene.get("start", 0),
-                        scene.get("end", 0),
-                        scene.get("summary", ""),
-                    )
-                brain.add_relationships(video_result.get("relationships", []))
-                brain.add_glossary(video_result.get("glossary", {}))
-                _merge_video_annotations(
-                    segments,
-                    annotations,
-                    registry,
-                )
+                video_result=VideoAnalyzer(settings,log).analyze(source_video,segments)
+                annotations=video_result["annotations"]
+                registry=video_result["registry"]
+                for scene in video_result.get("scene_summaries",[]):
+                    brain.add_scene_summary(scene.get("start",0),scene.get("end",0),scene.get("summary",""))
+                brain.add_relationships(video_result.get("relationships",[]))
+                brain.add_glossary(video_result.get("glossary",{}))
+                _merge_video_annotations(segments,annotations,registry)
             except Exception as exc:
-                log.warning(
-                    "Gemini video analysis failed; using audio diarization fallback: %s",
-                    str(exc)[:1200],
-                )
-                registry = _build_fallback_registry(segments)
-                _merge_video_annotations(segments, [], registry)
+                log.warning("Gemini video analysis failed; audio diarization fallback: %s",str(exc)[:1200])
+                registry=_build_fallback_registry(segments)
+                _merge_video_annotations(segments,[],registry)
         elif not reasoning_ok:
-            report(
-                "video",
-                "Scene reasoning disabled; using audio diarization fallback",
-            )
-            registry = _build_fallback_registry(segments)
-            _merge_video_annotations(segments, [], registry)
+            report("video","Scene reasoning disabled; audio diarization fallback")
+            registry=_build_fallback_registry(segments)
+            _merge_video_annotations(segments,[],registry)
 
         fallback_registry = _build_fallback_registry(segments)
         for cid, fallback in fallback_registry.items():
@@ -798,21 +795,6 @@ def run_pipeline(
             f"Locked {len(voice_map)} character voices and acting profiles",
         )
 
-        context_id = brain.interaction_id("seed")
-        if not context_id:
-            context_id, context_model = gemini.start_context_interaction(
-                brain.seed_prompt(),
-                preferred_key_index=0,
-                preferred_model_index=0,
-            )
-            brain.set_interaction_id("seed", context_id)
-            brain.set_interaction_id("seed_model", context_model)
-            brain.save()
-        report(
-            "context",
-            "Movie Brain context seed ready for parallel downstream calls",
-        )
-
         report(
             "translation",
             "Generating duration-aware Hindi dialogue",
@@ -838,7 +820,7 @@ def run_pipeline(
                 preferred_key_index=batch_index % max(1, len(settings.api_keys)),
                 preferred_model_index=batch_index,
                 context_text=brain.context_for_segments(batch),
-                previous_interaction_id=context_id,
+                previous_interaction_id=None,
             )
             return batch_index, translated
 
