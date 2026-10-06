@@ -243,7 +243,8 @@ def _generate_segment_audio(
 
     natural_min = max(0.30, preferred * 0.82)
     natural_cap = min(available, max(preferred * 1.18, preferred + 1.0))
-    # Allow the configured duration-rewrite budget; the old cap of 1 made a single short TTS response fatal.\n    rewrite_attempts = max(0, min(int(settings.rewrite_attempts), 3))
+    # Allow the configured duration-rewrite budget; keep a bounded retry count.
+    rewrite_attempts = max(0, min(int(getattr(settings, "rewrite_attempts", 1)), 3))
 
     best_path = None
     best_distance = float("inf")
