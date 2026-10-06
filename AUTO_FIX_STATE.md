@@ -52,3 +52,18 @@ Fix:
 - Batch synthesis remains available only when explicitly configured as `TTS_MODE=batch`.
 - Single-turn TTS uses the fixed single-speaker voice config and no unsupported speech annotations.
 - Existing 75% coverage QA remains enabled, and duration rewrite attempts remain 3.
+
+
+## Duration/prosody recovery fix — 2026-10-06
+
+Fix signature: tts-short-response-fatal-no-rewrite-budget
+Attempt: 1/3.
+
+Evidence: run #102 failed on `seg_000002` after Gemini returned only 0.682s for a 1.600s target (42.6% coverage). The orchestrator raised immediately even though the existing duration-rewrite helper was designed to regenerate short dialogue. The helper was also artificially capped to one rewrite attempt.
+
+Fix:
+- Honor up to 3 bounded duration-rewrite attempts.
+- Rotate preferred TTS model/key between rewrite attempts.
+- TTS now receives the target duration and requested pace explicitly and is told not to rush.
+- Low duration after bounded retries is recorded as a quality warning rather than failing the entire movie, so one imperfect line cannot prevent the final MP4 from being produced.
+- This follows the same high-level principles Meta describes for expressive translation: preserve vocal style, speech rate, rhythm and pauses, while lip syncing remains a separate downstream stage. citeturn778645search1turn778645search0
