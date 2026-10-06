@@ -242,7 +242,7 @@ def _generate_segment_audio(
 
     natural_min = max(0.30, preferred * 0.82)
     natural_cap = min(available, max(preferred * 1.18, preferred + 1.0))
-    attempts = max(0, min(int(settings.rewrite_attempts), 1))
+    # Allow the configured duration-rewrite budget; the old cap of 1 made a single short TTS response fatal.\n    attempts = max(0, min(int(settings.rewrite_attempts), 3))
 
     best_path = None
     best_distance = float("inf")
@@ -250,12 +250,22 @@ def _generate_segment_audio(
 
     for attempt in range(attempts + 1):
         raw = segment_dir / f'{segment["id"]}_attempt{attempt}.wav'
+        attempt_model_index = (
+            (preferred_model_index + attempt) % len(settings.tts_models)
+            if preferred_model_index is not None and settings.tts_models
+            else preferred_model_index
+        )
+        attempt_key_index = (
+            (preferred_key_index + attempt) % len(settings.api_keys)
+            if preferred_key_index is not None and settings.api_keys
+            else preferred_key_index
+        )
         gemini.tts_segment(
             segment,
             voice,
             raw,
-            preferred_key_index=preferred_key_index,
-            preferred_model_index=preferred_model_index,
+            preferred_key_index=attempt_key_index,
+            preferred_model_index=attempt_model_index,
             context_text=context_text,
             previous_interaction_id=previous_interaction_id,
         )
@@ -889,9 +899,17 @@ def run_pipeline(
                 observed = float(segment.get("tts_duration", 0.0) or 0.0)
                 coverage = observed / target if target else 1.0
                 if coverage < settings.tts_min_coverage_ratio:
-                    raise RuntimeError(
-                        f"TTS coverage too low for {segment['id']}: "
-                        f"{observed:.3f}s/{target:.3f}s ({coverage:.1%})"
+                    # Duration QA is a warning, not a reason to discard the whole movie.
+                    # _generate_segment_audio already performs bounded rewrite retries.
+                    segment["tts_quality_warning"] = {
+                        "coverage": coverage,
+                        "target": target,
+                        "observed": observed,
+                    }
+                    log.warning(
+                        "TTS coverage below target for %s: %.3fs/%.3fs (%.1f%%); "
+                        "keeping best natural TTS after bounded retries",
+                        segment["id"], observed, target, coverage * 100.0,
                     )
                 return segment, audio_path
 
