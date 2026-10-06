@@ -6,12 +6,6 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  push:
-    paths:
-      - "test/Input.mp4"
-      - "hindi_dubbing/**"
-      - "pyproject.toml"
-      - ".github/workflows/test-dubbing.yml"
   workflow_dispatch:
     inputs:
       video_path:
