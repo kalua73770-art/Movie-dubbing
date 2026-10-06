@@ -47,6 +47,18 @@ class Settings:
     translation_workers: int = int(os.getenv("TRANSLATION_WORKERS", "4"))
     tts_workers: int = int(os.getenv("TTS_WORKERS", "4"))
 
+    enable_openrouter_continuity: bool = _bool("ENABLE_OPENROUTER_CONTINUITY", False)
+    openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "")
+    openrouter_video_model: str = os.getenv("OPENROUTER_VIDEO_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
+    openrouter_reasoning_model: str = os.getenv("OPENROUTER_REASONING_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
+    openrouter_timeout_ms: int = int(os.getenv("OPENROUTER_TIMEOUT_MS", "180000"))
+    openrouter_chunk_seconds: int = int(os.getenv("OPENROUTER_CHUNK_SECONDS", "100"))
+    openrouter_chunk_max_seconds: int = int(os.getenv("OPENROUTER_CHUNK_MAX_SECONDS", "112"))
+    openrouter_boundary_search_seconds: int = int(os.getenv("OPENROUTER_BOUNDARY_SEARCH_SECONDS", "12"))
+    openrouter_video_max_mb: int = int(os.getenv("OPENROUTER_VIDEO_MAX_MB", "25"))
+    openrouter_video_width: int = int(os.getenv("OPENROUTER_VIDEO_WIDTH", "640"))
+    openrouter_video_fps: int = int(os.getenv("OPENROUTER_VIDEO_FPS", "10"))
+
     groq_api_key: str = os.getenv("GROQ_API_KEY", "")
     groq_translation_model: str = os.getenv("GROQ_TRANSLATION_MODEL", "openai/gpt-oss-120b")
     groq_timeout_ms: int = int(os.getenv("GROQ_TIMEOUT_MS", "60000"))
@@ -175,6 +187,17 @@ class Settings:
             raise RuntimeError("TRANSCRIBE_WORKERS must be >= 1")
         if self.translation_workers < 1:
             raise RuntimeError("TRANSLATION_WORKERS must be >= 1")
+        if self.enable_openrouter_continuity:
+            if not self.openrouter_api_key:
+                raise RuntimeError("OPENROUTER_API_KEY is missing or empty")
+            if self.openrouter_chunk_seconds < 30:
+                raise RuntimeError("OPENROUTER_CHUNK_SECONDS must be >= 30")
+            if self.openrouter_chunk_max_seconds < self.openrouter_chunk_seconds:
+                raise RuntimeError("OPENROUTER_CHUNK_MAX_SECONDS must be >= OPENROUTER_CHUNK_SECONDS")
+            if self.openrouter_boundary_search_seconds < 2:
+                raise RuntimeError("OPENROUTER_BOUNDARY_SEARCH_SECONDS must be >= 2")
+            if self.openrouter_video_max_mb < 5:
+                raise RuntimeError("OPENROUTER_VIDEO_MAX_MB must be >= 5")
         if not self.groq_api_key:
             raise RuntimeError("GROQ_API_KEY is missing or empty")
         if self.groq_timeout_ms <= 0:
