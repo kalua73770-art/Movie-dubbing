@@ -30,6 +30,7 @@ jobs:
 
     env:
       GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       ANTIGRAVITY_API_KEYS: ${{ secrets.ANTIGRAVITY_API_KEYS || secrets.GEMINI_API_KEYS }}
       GEMINI_TRANSCRIBE_MODEL: gemini-3.5-transcribe
       GEMINI_TEXT_MODELS: gemini-3.5-flash-lite,gemini-3.1-flash-lite
@@ -46,6 +47,8 @@ jobs:
       TRANSCRIBE_WORKERS: "4"
       TRANSLATION_WORKERS: "4"
       TTS_WORKERS: "4"
+      GROQ_TRANSLATION_MODEL: "openai/gpt-oss-120b"
+      GROQ_TIMEOUT_MS: "60000"
       TTS_MODE: "single"
       TTS_MIN_COVERAGE_RATIO: "0.75"
       TTS_REWRITE_ATTEMPTS: "3"
@@ -108,6 +111,9 @@ jobs:
           python -m compileall -q hindi_dubbing
           python -c "from google import genai; from google.genai import types; print('google-genai import OK'); print(types.HttpOptions(timeout=120000))"
           python -c "from hindi_dubbing.settings import settings; from hindi_dubbing.gemini import GeminiService; from hindi_dubbing.antigravity import AntigravityService; from hindi_dubbing.video_analysis import VideoAnalyzer; from hindi_dubbing.movie_brain import MovieBrain; from hindi_dubbing.background_reconstruction import reconstruct_background; from hindi_dubbing.pipeline.orchestrator import run_pipeline; print('pipeline imports OK')"
+
+      - name: Smoke test Groq translation
+        run: python scripts/groq_translation_smoke.py
 
       - name: Run movie dubbing
         run: |

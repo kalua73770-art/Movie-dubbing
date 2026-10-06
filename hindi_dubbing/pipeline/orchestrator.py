@@ -27,6 +27,7 @@ from hindi_dubbing.core.audio.processor import (
 from hindi_dubbing.core.mixing.mixer import mix_final
 from hindi_dubbing.antigravity import AntigravityService
 from hindi_dubbing.gemini import GeminiService
+from hindi_dubbing.groq_translation import GroqTranslator
 from hindi_dubbing.movie_brain import MovieBrain
 from hindi_dubbing.settings import settings
 from hindi_dubbing.video_analysis import VideoAnalyzer
@@ -242,13 +243,13 @@ def _generate_segment_audio(
 
     natural_min = max(0.30, preferred * 0.82)
     natural_cap = min(available, max(preferred * 1.18, preferred + 1.0))
-    # Allow the configured duration-rewrite budget; the old cap of 1 made a single short TTS response fatal.\n    attempts = max(0, min(int(settings.rewrite_attempts), 3))
+    # Allow the configured duration-rewrite budget; the old cap of 1 made a single short TTS response fatal.\n    rewrite_attempts = max(0, min(int(settings.rewrite_attempts), 3))
 
     best_path = None
     best_distance = float("inf")
     best_duration = 0.0
 
-    for attempt in range(attempts + 1):
+    for attempt in range(rewrite_attempts + 1):
         raw = segment_dir / f'{segment["id"]}_attempt{attempt}.wav'
         attempt_model_index = (
             (preferred_model_index + attempt) % len(settings.tts_models)
@@ -299,7 +300,7 @@ def _generate_segment_audio(
             segment["tts_time_stretch"] = 1.0
             return trimmed
 
-        if attempt < attempts:
+        if attempt < rewrite_attempts:
             segment["hindi"] = gemini.rewrite_for_observed_duration(
                 segment,
                 observed,
@@ -563,6 +564,7 @@ def run_pipeline(
             log,
         )
         gemini = GeminiService(settings, log)
+        groq = GroqTranslator(settings, log)
 
         report("model_check", "Checking configured Gemini model endpoints before expensive work")
         health = gemini.probe_models({
@@ -831,10 +833,10 @@ def run_pipeline(
         )
 
         def translate_one(batch_index, batch):
-            translated = gemini.translate_for_duration(
+            translated = groq.translate_for_duration(
                 batch,
                 preferred_key_index=batch_index % max(1, len(settings.api_keys)),
-                preferred_model_index=batch_index % max(1, len(settings.text_models)),
+                preferred_model_index=batch_index,
                 context_text=brain.context_for_segments(batch),
                 previous_interaction_id=context_id,
             )

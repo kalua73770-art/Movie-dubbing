@@ -47,6 +47,10 @@ class Settings:
     translation_workers: int = int(os.getenv("TRANSLATION_WORKERS", "4"))
     tts_workers: int = int(os.getenv("TTS_WORKERS", "4"))
 
+    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
+    groq_translation_model: str = os.getenv("GROQ_TRANSLATION_MODEL", "openai/gpt-oss-120b")
+    groq_timeout_ms: int = int(os.getenv("GROQ_TIMEOUT_MS", "60000"))
+
     # Video analysis is the most failure-prone/slowest optional stage.
     video_analysis_window_seconds: int = int(
         os.getenv("VIDEO_ANALYSIS_WINDOW_SECONDS", "180")
@@ -171,6 +175,10 @@ class Settings:
             raise RuntimeError("TRANSCRIBE_WORKERS must be >= 1")
         if self.translation_workers < 1:
             raise RuntimeError("TRANSLATION_WORKERS must be >= 1")
+        if not self.groq_api_key:
+            raise RuntimeError("GROQ_API_KEY is missing or empty")
+        if self.groq_timeout_ms <= 0:
+            raise RuntimeError("GROQ_TIMEOUT_MS must be > 0")
         if self.tts_workers < 1:
             raise RuntimeError("TTS_WORKERS must be >= 1")
         if self.tts_mode not in {"single", "batch"}:

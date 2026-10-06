@@ -67,3 +67,13 @@ Fix:
 - TTS now receives the target duration and requested pace explicitly and is told not to rush.
 - Low duration after bounded retries is recorded as a quality warning rather than failing the entire movie, so one imperfect line cannot prevent the final MP4 from being produced.
 - This follows the same high-level principles Meta describes for expressive translation: preserve vocal style, speech rate, rhythm and pauses, while lip syncing remains a separate downstream stage. citeturn778645search1turn778645search0
+
+## Translation migration — Groq GPT-OSS 120B — 2026-10-06
+
+Scope: translation only.
+- `translate_for_duration()` moved out of Gemini into `GroqTranslator`.
+- Model: `openai/gpt-oss-120b`.
+- Secret: `GROQ_API_KEY`.
+- Existing duration/word-count logic, translation prompt, batching, MovieBrain context hand-off, and `ID|||Hindi text` output parsing are preserved.
+- Gemini transcription, TTS, video understanding, Antigravity, and other pipeline stages are unchanged.
+- Fixed the prior rewrite-variable NameError by using explicit `rewrite_attempts`.
